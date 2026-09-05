@@ -50,8 +50,34 @@ start:
 
         mov     si, msg_done
         call    puts
+        call    write_log
         mov     ax, 0x4C00
         int     0x21
+
+; ---------------------------------------------------------------- the file
+; Everything that went to the screen is kept in a buffer and written to
+; \PCI.TXT, so the answer can be carried off the machine on the stick
+; instead of being copied down by hand.
+write_log:
+        mov     dx, log_name
+        xor     cx, cx
+        mov     ah, 0x3C                        ; create
+        int     0x21
+        jc      .failed
+        mov     bx, ax
+        mov     cx, [log_len]
+        mov     dx, log_buf
+        mov     ah, 0x40                        ; write
+        int     0x21
+        mov     ah, 0x3E                        ; close
+        int     0x21
+        mov     si, msg_saved
+        call    puts_screen
+        ret
+.failed:
+        mov     si, msg_nosave
+        call    puts_screen
+        ret
 
 ; ---------------------------------------------------------------- one device
 ; EAX = vendor and device, BX = where it lives
@@ -159,7 +185,7 @@ page_break:
         mov     word [lines], 0
         push    si
         mov     si, msg_more
-        call    puts
+        call    puts_screen
         pop     si
         xor     ah, ah
         int     0x16
@@ -176,7 +202,23 @@ puts:
 .done:  pop     ax
         ret
 
+; the same, but only to the screen: prompts do not belong in the file
+puts_screen:
+        push    ax
+.loop:  lodsb
+        or      al, al
+        jz      .done
+        call    putc_screen
+        jmp     .loop
+.done:  pop     ax
+        ret
+
 putc:
+        call    putc_screen
+        call    log_char
+        ret
+
+putc_screen:
         push    ax
         push    bx
         mov     ah, 0x0E
@@ -184,6 +226,16 @@ putc:
         int     0x10
         pop     bx
         pop     ax
+        ret
+
+log_char:
+        push    bx
+        mov     bx, [log_len]
+        cmp     bx, LOG_MAX - 1
+        jae     .full
+        mov     [log_buf+bx], al
+        inc     word [log_len]
+.full:  pop     bx
         ret
 
 crlf:
@@ -239,10 +291,17 @@ msg_i2c:    db "  <- I2C controller", 0
 msg_usb:    db "  <- USB controller", 0
 msg_audio:  db "  <- audio", 0
 msg_more:   db "-- press a key --", 13, 10, 0
+msg_saved:  db "Written to C:\PCI.TXT", 13, 10, 0
+msg_nosave: db "Could not write C:\PCI.TXT", 13, 10, 0
+log_name:   db "\PCI.TXT", 0
 msg_done:   db "-------------------------------------------------", 13, 10
             db "Class 0C80 is where a touchpad on an I2C bus would hang.", 13, 10, 0
+
+LOG_MAX     equ 8192
 
 section .bss
 dev_id:     resd 1
 class_dw:   resd 1
 lines:      resw 1
+log_len:    resw 1
+log_buf:    resb LOG_MAX
