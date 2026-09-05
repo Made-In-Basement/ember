@@ -14,6 +14,7 @@
 #include "nano.h"
 #include "draw.h"
 #include "guifont.h"
+#include "guiart.h"
 
 int scr_w, scr_h;
 uint32_t *back;
@@ -466,6 +467,66 @@ void clock_start(void)
 unsigned now_ms(void)
 {
     return (unsigned)((rdtsc() - tsc_base) / (tsc_hz / 1000u));
+}
+
+/* ---------------------------------------------------------------- pictures */
+/* A column range of a picture, blended over what is already there.  Alpha
+   is the artist's, so soft edges stay soft over any background. */
+void image_draw_part(const struct image *im, int sx, int sw, int x, int y)
+{
+    int row, col;
+    if (!im || !im->bgra) return;
+    if (sx < 0) { sw += sx; x -= sx; sx = 0; }
+    if (sx + sw > im->w) sw = im->w - sx;
+    if (sw <= 0) return;
+    for (row = 0; row < im->h; row++) {
+        int py = y + row;
+        const unsigned char *p;
+        uint32_t *out;
+        if (py < cy0 || py >= cy1) continue;
+        p = im->bgra + ((size_t)row * im->w + sx) * 4;
+        out = back + (size_t)py * scr_w;
+        for (col = 0; col < sw; col++, p += 4) {
+            int px = x + col;
+            int a = p[3];
+            uint32_t c;
+            if (px < cx0 || px >= cx1 || a == 0) continue;
+            c = ((uint32_t)p[2] << 16) | ((uint32_t)p[1] << 8) | p[0];
+            out[px] = (a == 255) ? c : mix(out[px], c, a);
+        }
+    }
+    damage(x, y, sw, im->h);
+}
+
+void image_draw(const struct image *im, int x, int y)
+{
+    if (im) image_draw_part(im, 0, im->w, x, y);
+}
+
+/* the same, pulled towards a colour: how an icon lights up when picked */
+void image_draw_tinted(const struct image *im, int x, int y, uint32_t tint,
+                       int amount)
+{
+    int row, col;
+    if (!im || !im->bgra) return;
+    for (row = 0; row < im->h; row++) {
+        int py = y + row;
+        const unsigned char *p;
+        uint32_t *out;
+        if (py < cy0 || py >= cy1) continue;
+        p = im->bgra + (size_t)row * im->w * 4;
+        out = back + (size_t)py * scr_w;
+        for (col = 0; col < im->w; col++, p += 4) {
+            int px = x + col;
+            int a = p[3];
+            uint32_t c;
+            if (px < cx0 || px >= cx1 || a == 0) continue;
+            c = ((uint32_t)p[2] << 16) | ((uint32_t)p[1] << 8) | p[0];
+            c = mix(c, tint, amount);
+            out[px] = (a == 255) ? c : mix(out[px], c, a);
+        }
+    }
+    damage(x, y, im->w, im->h);
 }
 
 /* ---------------------------------------------------------------- text */

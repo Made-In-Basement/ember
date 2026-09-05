@@ -218,6 +218,7 @@ def build_gui():
     sp.check_call([sys.executable, os.path.join(ROOT, 'tools', 'check_escapes.py')])
     sp.check_call([sys.executable, os.path.join(ROOT, 'tools', 'mkfont.py')])
     sp.check_call([sys.executable, os.path.join(ROOT, 'tools', 'mktables.py')])
+    sp.check_call([sys.executable, os.path.join(ROOT, 'tools', 'mkicons.py')])
     d = os.path.join(ROOT, 'nano', 'gui')
     build_app('gui',
               [os.path.join(d, f) for f in ('draw.c', 'input.c', 'crystal.c',

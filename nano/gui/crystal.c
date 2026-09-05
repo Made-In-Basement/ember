@@ -13,6 +13,7 @@
 #include "draw.h"
 #include "input.h"
 #include "shell.h"
+#include "guiart.h"
 
 #define AMBER       0xF0A020
 #define AMBER_HOT   0xFFC65A
@@ -25,8 +26,8 @@
 #define TEXT        0xD8C8B0
 #define TEXT_DIM    0x8A7C68
 
-#define CRYSTAL_W   92          /* the whole gem */
-#define CRYSTAL_H   86
+#define CRYSTAL_W   (art_crystal.w)     /* the whole gem, as drawn */
+#define CRYSTAL_H   (art_crystal.h)
 #define MENU_W      260
 #define SPLIT_GAP   10          /* clearance between a half and the menu */
 /* each half ends up just clear of the menu, so the menu occupies the gap */
@@ -84,65 +85,6 @@ int crystal_is_open(void)
     return open_state == 1 || open_state == 2;
 }
 
-/* ---------------------------------------------------------------- the gem */
-/* One half of the gem: side = -1 for the left, +1 for the right.  The shape
-   is a hexagon cut down the middle, so the two halves make a whole. */
-static void draw_half(int cx, int cy, int side, int lift)
-{
-    int hw = CRYSTAL_W / 2, hh = CRYSTAL_H / 2;
-    int x = cx + side * lift;
-    int p[12];
-    uint32_t face_top = mix(AMBER_HOT, AMBER_PALE, 90);
-    uint32_t face_mid = AMBER;
-    uint32_t face_low = AMBER_DEEP;
-
-    /* The silhouette: flat along the seam, faceted and pointed outwards, so
-       the two halves together make one gem and the break reads as a break. */
-    p[0] = x;                       p[1] = cy - hh;         /* seam, top */
-    p[2] = x + side * hw * 2 / 3;   p[3] = cy - hh * 3 / 4; /* shoulder */
-    p[4] = x + side * hw;           p[5] = cy;              /* the outer point */
-    p[6] = x + side * hw * 2 / 3;   p[7] = cy + hh * 3 / 4;
-    p[8] = x;                       p[9] = cy + hh;         /* seam, bottom */
-    poly_fill(p, 5, face_mid);
-
-    /* the upper facet takes the light */
-    p[0] = x;                       p[1] = cy - hh;
-    p[2] = x + side * hw * 2 / 3;   p[3] = cy - hh * 3 / 4;
-    p[4] = x + side * hw;           p[5] = cy;
-    p[6] = x;                       p[7] = cy - hh / 6;
-    poly_fill(p, 4, face_top);
-
-    /* the lower one is in shade */
-    p[0] = x;                       p[1] = cy + hh;
-    p[2] = x + side * hw * 2 / 3;   p[3] = cy + hh * 3 / 4;
-    p[4] = x + side * hw;           p[5] = cy;
-    p[6] = x;                       p[7] = cy + hh / 6;
-    poly_fill(p, 4, face_low);
-
-    /* a bright cut along the seam, and a rim that catches the light */
-    fill(x - (side < 0 ? 1 : 0), cy - hh, 1, CRYSTAL_H, AMBER_PALE);
-    {
-        int i;
-        for (i = 0; i <= hh; i++) {             /* the two outer edges */
-            int ex = x + side * (hw * 2 / 3 + (hw / 3) * i / hh);
-            pixel_blend(ex, cy - hh * 3 / 4 + (hh * 3 / 4) * i / hh, AMBER_PALE, 150);
-            pixel_blend(ex, cy + hh * 3 / 4 - (hh * 3 / 4) * i / hh, AMBER_PALE, 110);
-        }
-    }
-}
-
-/* the E, built from bars the way the logo is */
-static void draw_E(int cx, int cy, int alpha)
-{
-    int w = 26, h = 34;
-    int x = cx - w / 2, y = cy - h / 2;
-    int bar = 7;
-    fill_alpha(x, y, bar, h, AMBER_DARK, alpha);            /* the spine */
-    fill_alpha(x, y, w, bar, AMBER_DARK, alpha);            /* top */
-    fill_alpha(x, y + (h - bar) / 2, w - 5, bar, AMBER_DARK, alpha);
-    fill_alpha(x, y + h - bar, w, bar, AMBER_DARK, alpha);  /* bottom */
-}
-
 /* ---------------------------------------------------------------- the menu */
 static void draw_menu_panel(int t)
 {
@@ -190,10 +132,15 @@ void crystal_draw(void)
     soft_ellipse(cx, cy, 190, 118, AMBER, 42);
     soft_ellipse(cx, cy, 110, 76, AMBER_HOT, 34);
 
-    draw_half(cx, cy, -1, lift);
-    draw_half(cx, cy, +1, lift);
-    if (t < 200)
-        draw_E(cx, cy, 255 - t);
+    {
+        /* the two halves of the gem, drawn from the one picture so the
+           break falls exactly where the artist put the middle */
+        int half = art_crystal.w / 2;
+        int top = crystal_y;
+        image_draw_part(&art_crystal, 0, half, cx - half - lift, top);
+        image_draw_part(&art_crystal, half, art_crystal.w - half,
+                        cx + lift, top);
+    }
     if (hovered && t == 0)
         glow(cx - CRYSTAL_W / 2, cy - CRYSTAL_H / 2, CRYSTAL_W, CRYSTAL_H,
              8, AMBER_HOT, 3);

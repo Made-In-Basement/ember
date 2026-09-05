@@ -10,6 +10,7 @@
 #include "draw.h"
 #include "input.h"
 #include "shell.h"
+#include "guiart.h"
 
 /* ---- the palette everything is built from ---- */
 #define BG_TOP      0x0B0806
@@ -153,70 +154,21 @@ static void draw_window(struct window *w, int is_focused, int with_backdrop)
 }
 
 /* ---------------------------------------------------------------- icons */
-struct desk_icon { const char *label; int kind; };
+struct desk_icon { const char *label; const struct image *art; };
 static const struct desk_icon icons[] = {
-    { "Files",      0 },
-    { "Music",      1 },
-    { "Prompt",     2 },
-    { "Calculator", 3 },
-    { "Doom",       3 },
-    { "About",      4 },
+    { "Files",      &art_folder },
+    { "Music",      &art_music },
+    { "Prompt",     &art_terminal },
+    { "Calculator", &art_calc },
+    { "Doom",       &art_chip },
+    { "About",      &art_info },
 };
 #define ICON_COUNT 6
 #define ICON_W     96
-#define ICON_H     92
+#define ICON_H     100
 #define ICON_X     28
 #define ICON_Y     (BAR_H + 24)
 static int icon_sel = -1;
-
-static void icon_art(int kind, int x, int y, int lit)
-{
-    uint32_t face = lit ? AMBER_HOT : AMBER;
-    uint32_t deep = lit ? 0xB07418 : 0x7A5214;
-    int p[16];
-    switch (kind) {
-    case 0:                                     /* a folder */
-        p[0] = x;      p[1] = y + 8;
-        p[2] = x + 18; p[3] = y + 8;
-        p[4] = x + 24; p[5] = y + 15;
-        p[6] = x + 46; p[7] = y + 15;
-        p[8] = x + 46; p[9] = y + 40;
-        p[10] = x;     p[11] = y + 40;
-        poly_fill(p, 6, deep);
-        fill(x + 3, y + 19, 40, 18, face);
-        break;
-    case 1:                                     /* a note */
-        fill(x + 26, y + 6, 4, 26, face);
-        fill(x + 26, y + 6, 16, 5, face);
-        round_fill(x + 14, y + 28, 16, 12, 6, deep);
-        break;
-    case 2:                                     /* a page */
-        fill(x + 8, y + 5, 30, 38, deep);
-        fill(x + 11, y + 11, 24, 2, face);
-        fill(x + 11, y + 17, 24, 2, face);
-        fill(x + 11, y + 23, 24, 2, face);
-        fill(x + 11, y + 29, 16, 2, face);
-        break;
-    case 3:                                     /* a chip */
-        fill(x + 10, y + 10, 28, 28, deep);
-        fill(x + 16, y + 16, 16, 16, face);
-        {
-            int i;
-            for (i = 0; i < 4; i++) {
-                fill(x + 14 + i * 7, y + 4, 3, 6, face);
-                fill(x + 14 + i * 7, y + 38, 3, 6, face);
-                fill(x + 4, y + 14 + i * 7, 6, 3, face);
-                fill(x + 38, y + 14 + i * 7, 6, 3, face);
-            }
-        }
-        break;
-    default:                                    /* a mark */
-        round_fill(x + 10, y + 8, 28, 28, 14, deep);
-        fill(x + 22, y + 15, 4, 4, face);
-        fill(x + 22, y + 22, 4, 10, face);
-        break;
-    }
-}
 
 static void draw_icons(void)
 {
@@ -225,12 +177,16 @@ static void draw_icons(void)
         int x = ICON_X, y = ICON_Y + i * ICON_H;
         int lit = (i == icon_sel);
         int tw = text_width(F_SMALL, icons[i].label);
+        const struct image *art = icons[i].art;
+        int ax = x + (ICON_W - 12) / 2 - art->w / 2;
         if (lit) {
-            round_fill_alpha(x - 6, y - 4, ICON_W, ICON_H - 12, 6, AMBER, 26);
-            round_frame_alpha(x - 6, y - 4, ICON_W, ICON_H - 12, 6, AMBER_DIM, 160);
+            round_fill_alpha(x - 6, y - 6, ICON_W, ICON_H - 8, 6, AMBER, 30);
+            round_frame_alpha(x - 6, y - 6, ICON_W, ICON_H - 8, 6, AMBER_DIM, 170);
+            image_draw_tinted(art, ax, y, 0xFFFFFF, 60);
+        } else {
+            image_draw(art, ax, y);
         }
-        icon_art(icons[i].kind, x + 20, y, lit);
-        text(F_SMALL, x + (ICON_W - 12) / 2 - tw / 2, y + 50,
+        text(F_SMALL, x + (ICON_W - 12) / 2 - tw / 2, y + art->h + 6,
              icons[i].label, lit ? AMBER_HOT : TEXT);
     }
 }

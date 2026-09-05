@@ -34,6 +34,13 @@ void pixel_blend(int x, int y, uint32_t c, int alpha);
 
 uint32_t mix(uint32_t a, uint32_t b, int t);    /* t = 0..255 */
 void poly_fill(const int *pts, int n, uint32_t c);      /* pts = x,y pairs */
+
+/* pictures: BGRA bytes prepared at build time, blended as they are drawn */
+struct image;
+void image_draw(const struct image *im, int x, int y);
+void image_draw_part(const struct image *im, int sx, int sw, int x, int y);
+void image_draw_tinted(const struct image *im, int x, int y, uint32_t tint,
+                       int amount);
 void poly_fill_alpha(const int *pts, int n, uint32_t c, int alpha);
 void glow(int x, int y, int w, int h, int r, uint32_t c, int rings);
 void soft_ellipse(int cx, int cy, int rx, int ry, uint32_t c, int max_alpha);

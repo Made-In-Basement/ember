@@ -18,6 +18,8 @@ root/DOOM/README.TXT
 # Written by the running system
 root/EMBER.LOG
 
+# The artwork in graphics/ IS kept: build/guiart.h is generated from it.
+
 # Editors and the operating system underneath
 *.swp
 *~
