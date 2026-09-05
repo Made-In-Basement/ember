@@ -116,13 +116,18 @@ static void pics_scan(const char *where)
     pic_dir[sizeof pic_dir - 1] = 0;
     strcpy(pattern, pic_dir);
     if (pattern[0] && pattern[strlen(pattern) - 1] != '\\') strcat(pattern, "\\");
-    strcat(pattern, "*.BMP");
+    strcat(pattern, "*.*");
     for (rc = sys_findfirst(pattern, &f); rc == 0 && pic_count < MAX_PICS;
          rc = sys_findnext(&f)) {
         char longname[84];
-        const char *use = f.name;
+        const char *use = f.name, *dot;
         if (f.attr & 0x18) continue;
         if (sys_long_name(longname, sizeof longname) > 0) use = longname;
+        dot = strrchr(use, '.');
+        if (!dot) continue;
+        if (strcasecmp(dot, ".BMP") && strcasecmp(dot, ".JPG") &&
+            strcasecmp(dot, ".JPEG"))
+            continue;
         strncpy(pic_names[pic_count], use, sizeof pic_names[0] - 1);
         pic_names[pic_count][sizeof pic_names[0] - 1] = 0;
         pic_count++;
@@ -134,7 +139,7 @@ static void pics_draw(struct window *w)
     int rows = (w->h - 44) / ROW_H, i;
     text(F_SMALL, w->x + 16, w->y + 10,
          pic_count ? "Pick a picture for the background"
-                   : "No .BMP files found in \\WALL or the root", TEXT_DIM);
+                   : "No .JPG or .BMP files in \\WALL or the root", TEXT_DIM);
     fill(w->x + 12, w->y + 32, w->w - 24, 1, EDGE);
     if (w->sel < w->top) w->top = w->sel;
     if (w->sel >= w->top + rows) w->top = w->sel - rows + 1;

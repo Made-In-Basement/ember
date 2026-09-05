@@ -221,6 +221,7 @@ def build_gui():
     sp.check_call([sys.executable, os.path.join(ROOT, 'tools', 'mkicons.py')])
     d = os.path.join(ROOT, 'nano', 'gui')
     build_app('gui',
+              [os.path.join(ROOT, 'build', 'src_dl', 'picojpeg.c')] +
               [os.path.join(d, f) for f in ('draw.c', 'input.c', 'crystal.c',
                                             'wall.c', 'menu.c', 'music.c',
                                             'files.c', 'tools.c', 'apps.c',

@@ -42,6 +42,103 @@ const char *wall_name(int kind)
 
 int wall_choice_count(void) { return WASH_COUNT; }
 
+/* ---------------------------------------------------------------- JPEG */
+/* picojpeg hands back one block of pixels at a time, in reading order, so
+   each block can go straight into the finished wallpaper and the whole
+   photograph never has to be held in memory.  Each source pixel is spread
+   over the destination rectangle it covers, which scales a picture of any
+   size to the screen without leaving gaps. */
+#include "picojpeg.h"
+
+static int jpg_fd;
+static unsigned char jpg_buf[4096];
+static int jpg_have, jpg_at;
+
+static unsigned char jpg_feed(unsigned char *out, unsigned char want,
+                              unsigned char *got, void *unused)
+{
+    int n = 0;
+    (void)unused;
+    while (n < want) {
+        if (jpg_at >= jpg_have) {               /* refill from the disk */
+            jpg_have = sys_read(jpg_fd, jpg_buf, sizeof jpg_buf);
+            jpg_at = 0;
+            if (jpg_have <= 0) break;
+        }
+        out[n++] = jpg_buf[jpg_at++];
+    }
+    *got = (unsigned char)n;
+    return 0;
+}
+
+static int jpeg_load(const char *path, uint32_t *dest)
+{
+    pjpeg_image_info_t info;
+    int mcu_x = 0, mcu_y = 0;
+
+    jpg_fd = sys_open(path);
+    if (jpg_fd < 0) return -1;
+    jpg_have = jpg_at = 0;
+    if (pjpeg_decode_init(&info, jpg_feed, 0, 0) != 0) {
+        sys_close(jpg_fd);
+        return -1;
+    }
+    if (info.m_width <= 0 || info.m_height <= 0) {
+        sys_close(jpg_fd);
+        return -1;
+    }
+
+    for (;;) {
+        int bx, by, block;
+        if (pjpeg_decode_mcu() != 0) break;     /* PJPG_NO_MORE_BLOCKS ends it */
+        for (block = 0; block < (info.m_MCUWidth / 8) * (info.m_MCUHeight / 8);
+             block++) {
+            int ox = (block & 1) ? 8 : 0;
+            int oy = (block & 2) ? 8 : 0;
+            const unsigned char *r = info.m_pMCUBufR + block * 64;
+            const unsigned char *g = info.m_pMCUBufG + block * 64;
+            const unsigned char *b = info.m_pMCUBufB + block * 64;
+            if (info.m_MCUWidth == 8) ox = 0;   /* one block wide */
+            if (info.m_MCUHeight == 8) oy = 0;
+            if (info.m_MCUWidth == 8 && info.m_MCUHeight == 16)
+                oy = block * 8;
+            for (by = 0; by < 8; by++) {
+                int sy = mcu_y * info.m_MCUHeight + oy + by;
+                int y0 = (int)((long)sy * scr_h / info.m_height);
+                int y1 = (int)((long)(sy + 1) * scr_h / info.m_height);
+                int yy;
+                if (sy >= info.m_height) break;
+                if (y1 <= y0) y1 = y0 + 1;
+                if (y1 > scr_h) y1 = scr_h;
+                for (bx = 0; bx < 8; bx++) {
+                    int sx = mcu_x * info.m_MCUWidth + ox + bx;
+                    int x0, x1, xx;
+                    uint32_t c;
+                    if (sx >= info.m_width) break;
+                    x0 = (int)((long)sx * scr_w / info.m_width);
+                    x1 = (int)((long)(sx + 1) * scr_w / info.m_width);
+                    if (x1 <= x0) x1 = x0 + 1;
+                    if (x1 > scr_w) x1 = scr_w;
+                    c = info.m_comps == 1
+                        ? (((uint32_t)r[by * 8 + bx] << 16)
+                           | ((uint32_t)r[by * 8 + bx] << 8) | r[by * 8 + bx])
+                        : (((uint32_t)r[by * 8 + bx] << 16)
+                           | ((uint32_t)g[by * 8 + bx] << 8) | b[by * 8 + bx]);
+                    for (yy = y0; yy < y1; yy++)
+                        for (xx = x0; xx < x1; xx++)
+                            dest[(size_t)yy * scr_w + xx] = c;
+                }
+            }
+        }
+        if (++mcu_x == info.m_MCUSPerRow) {
+            mcu_x = 0;
+            if (++mcu_y == info.m_MCUSPerCol) break;
+        }
+    }
+    sys_close(jpg_fd);
+    return 0;
+}
+
 /* ---------------------------------------------------------------- BMP */
 static uint16_t rd16(const uint8_t *p) { return (uint16_t)(p[0] | (p[1] << 8)); }
 static uint32_t rd32(const uint8_t *p)
@@ -53,6 +150,12 @@ static uint32_t rd32(const uint8_t *p)
    taken as they are; an 8-bit one is looked up through its palette.  Rows
    in a BMP normally run bottom to top, which is why the sign of the height
    has to be respected. */
+static int is_jpeg(const char *path)
+{
+    const char *d = strrchr(path, '.');
+    return d && (!strcasecmp(d, ".JPG") || !strcasecmp(d, ".JPEG"));
+}
+
 int wall_load(const char *path)
 {
     uint8_t head[54], pal[1024];
@@ -61,6 +164,19 @@ int wall_load(const char *path)
     int fd, w, h, bpp, flip = 1, stride, y, x, colours = 0;
     uint32_t data_off;
 
+    if (is_jpeg(path)) {
+        uint32_t *pic = malloc((size_t)scr_w * scr_h * 4);
+        if (!pic) return -1;
+        if (jpeg_load(path, pic) != 0) { free(pic); return -1; }
+        if (picture) free(picture);
+        picture = pic;
+        picture_w = scr_w;
+        picture_h = scr_h;
+        wall_kind = WALL_PICTURE;
+        strncpy(wall_file, path, sizeof wall_file - 1);
+        wall_file[sizeof wall_file - 1] = 0;
+        return 0;
+    }
     fd = sys_open(path);
     if (fd < 0) return -1;
     if (sys_read(fd, head, 54) != 54 || head[0] != 'B' || head[1] != 'M')

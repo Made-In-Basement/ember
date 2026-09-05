@@ -80,6 +80,13 @@ drives the mouse, captures audio and takes screenshots.
   opens the music player, on a `.BAT` runs its lines, and on anything else
   opens the viewer. It is a plain `.COM` program (`programs/fm.asm`), so it
   can run other programs and get them back.
+- A desktop background of your own: right-click the desktop for five drawn
+  washes or a picture off the disk. JPEG and BMP are both read, so a
+  photograph can be dropped on the stick with no conversion. JPEG is also
+  the faster of the two here: reads go one sector at a time through the
+  BIOS, so a 6 MB bitmap costs twelve thousand of them where the same
+  picture as a JPEG costs a twelfth of that. The choice is kept in
+  `EMBER.CFG`.
 - A boot splash: `SPLASH picture.bin [music.wav]` shows a full-screen
   800x600 picture, plays a WAV under it, and holds it for a key or three
   seconds. `tools/mksplash.py image.jpg` makes the file from any picture
