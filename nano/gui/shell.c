@@ -69,6 +69,7 @@ int win_open(const char *title, int w, int h, void (*draw)(struct window *),
 void win_close(int id)
 {
     int i, j;
+    music_closed(id);
     windows[id].open = 0;
     for (i = 0, j = 0; i < window_count; i++)
         if (z_order[i] != id) z_order[j++] = z_order[i];
@@ -99,19 +100,21 @@ static int window_hit(int x, int y)
 }
 
 /* ---------------------------------------------------------------- chrome */
-static void draw_window(struct window *w, int is_focused)
+static void draw_window(struct window *w, int is_focused, int with_backdrop)
 {
     int tx = w->x, ty = w->y - TITLE_H;
     int tw = w->w, th = TITLE_H + w->h;
 
-    /* the shadow falls down and to the right, away from the light */
-    shadow(tx + 3, ty + 5, tw, th, 4, 9);
-
-    /* the frame: a lit edge on top, a dark one underneath */
-    round_fill(tx - 2, ty - 2, tw + 4, th + 4, 5,
-               is_focused ? 0x4A3618 : 0x2A2114);
-    if (is_focused)
-        glow(tx - 2, ty - 2, tw + 4, th + 4, 5, AMBER, 4);
+    /* The shadow and the halo are translucent, so they may only be laid
+       down over freshly painted desktop; on a light repaint the window
+       redraws its own opaque parts and leaves them alone. */
+    if (with_backdrop) {
+        shadow(tx + 3, ty + 5, tw, th, 4, 9);
+        round_fill(tx - 2, ty - 2, tw + 4, th + 4, 5,
+                   is_focused ? 0x4A3618 : 0x2A2114);
+        if (is_focused)
+            glow(tx - 2, ty - 2, tw + 4, th + 4, 5, AMBER, 4);
+    }
 
     /* the title bar */
     vgradient(tx, ty, tw, TITLE_H,
@@ -289,6 +292,44 @@ static void draw_bar(void)
          (BAR_H - text_height(F_BOLD)) / 2, clk, AMBER);
 }
 
+#define CUR_W 12
+#define CUR_H 18
+static uint32_t cursor_under[CUR_W * CUR_H];
+static int cursor_saved_x = -1, cursor_saved_y;
+
+static void cursor_lift(void)
+{
+    int row, col;
+    if (cursor_saved_x < 0) return;
+    for (row = 0; row < CUR_H; row++) {
+        int py = cursor_saved_y + row;
+        if (py < 0 || py >= scr_h) continue;
+        for (col = 0; col < CUR_W; col++) {
+            int px = cursor_saved_x + col;
+            if (px < 0 || px >= scr_w) continue;
+            back[(size_t)py * scr_w + px] = cursor_under[row * CUR_W + col];
+        }
+    }
+    damage(cursor_saved_x, cursor_saved_y, CUR_W, CUR_H);
+    cursor_saved_x = -1;
+}
+
+static void cursor_save(int x, int y)
+{
+    int row, col;
+    for (row = 0; row < CUR_H; row++) {
+        int py = y + row;
+        for (col = 0; col < CUR_W; col++) {
+            int px = x + col;
+            cursor_under[row * CUR_W + col] =
+                (px >= 0 && px < scr_w && py >= 0 && py < scr_h)
+                    ? back[(size_t)py * scr_w + px] : 0;
+        }
+    }
+    cursor_saved_x = x;
+    cursor_saved_y = y;
+}
+
 static void draw_cursor(int x, int y)
 {
     static const char *shape[] = {
@@ -312,7 +353,7 @@ static void draw_all(void)
     int i;
     draw_desktop();
     for (i = 0; i < window_count; i++)
-        draw_window(&windows[z_order[i]], z_order[i] == focused);
+        draw_window(&windows[z_order[i]], z_order[i] == focused, 1);
     draw_bar();
     crystal_draw();
 }
@@ -325,8 +366,9 @@ void shell_run_menu(int item)
     case 1: app_music(); break;
     case 2: app_text(); break;
     case 3: app_doom(); break;
-    case 4: app_about(); break;
-    case 5: quit_requested = 1; break;
+    case 4: app_help(); break;
+    case 5: app_about(); break;
+    case 6: quit_requested = 1; break;
     default: break;
     }
 }
@@ -389,12 +431,21 @@ static void handle(struct event *e)
         }
         break;
     case EV_KEY:
+        if (e->a == K_WIN || e->a == K_WIN_R || e->a == K_MENU) {
+            crystal_toggle();                           /* the crystal opens */
+            break;
+        }
         if (e->a == K_ESC) {
             if (crystal_is_open()) crystal_close();
             else if (focused >= 0) win_close(focused);
             break;
         }
+        if (e->a == K_F1) { app_help(); break; }
         if (e->a == K_F10) { quit_requested = 1; break; }
+        if (e->a == K_TAB && window_count > 1) {        /* through the windows */
+            raise_window(z_order[0]);
+            break;
+        }
         if (focused >= 0 && windows[focused].event)
             windows[focused].event(&windows[focused], e);
         break;
@@ -419,22 +470,39 @@ int main(int argc, char **argv)
     input_open(scr_w, scr_h);
     input_start_keyboard();
     crystal_x = scr_w / 2;
+    music_chime();
     app_about();
 
     while (!quit_requested) {
-        int dirty = 0;
-        while (next_event(&e)) { handle(&e); dirty = 1; }
-        if (mouse_x != last_x || mouse_y != last_y) dirty = 1;
-        if (crystal_busy()) dirty = 1;                  /* keep the gem moving */
-        if (now_ms() - last_clock > 20000) { last_clock = now_ms(); dirty = 1; }
-        if (dirty) {
-            draw_all();
-            if (last_x >= 0) damage(last_x, last_y, 12, 18);
+        int full = 0, light = 0;
+        while (next_event(&e)) { handle(&e); full = 1; }
+        if (crystal_busy()) full = 1;                   /* the gem is moving */
+        if (now_ms() - last_clock > 20000) { last_clock = now_ms(); full = 1; }
+        if (music_tick()) light = 1;                    /* only its own window */
+        if (mouse_x != last_x || mouse_y != last_y) light = 1;
+
+        if (full || light) {
+            /* Redrawing the whole desktop thirty times a second would push
+               five megabytes a frame at the screen; when only a window's
+               contents changed, repaint that window and nothing else. */
+            cursor_lift();
+            if (full) {
+                draw_all();
+            } else if (focused >= 0) {
+                int i;
+                for (i = 0; i < window_count; i++)
+                    if (windows[z_order[i]].draw)
+                        draw_window(&windows[z_order[i]], z_order[i] == focused, 0);
+            }
+            cursor_save(mouse_x, mouse_y);
             draw_cursor(mouse_x, mouse_y);
             last_x = mouse_x;
             last_y = mouse_y;
             draw_present();
-        } else {
+        } else if (!music_active()) {
+            /* Nothing to draw and nothing to feed: wait for the next
+               interrupt rather than spinning.  With sound playing there is
+               always the ring to keep ahead of, so we stay awake. */
             __asm__ volatile("hlt");
         }
     }

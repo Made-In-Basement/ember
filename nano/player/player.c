@@ -328,10 +328,10 @@ int main(int argc, char **argv)
                         redraw_list = redraw_info = 1;
                     }
                 } else if (ch == '+' || ch == '=') {
-                    if (audio_volume < 10) audio_volume++;
+                    if (audio_volume < 100) audio_volume += 10;
                     redraw_info = 1;
                 } else if (ch == '-' || ch == '_') {
-                    if (audio_volume > 0) audio_volume--;
+                    if (audio_volume > 0) audio_volume -= 10;
                     redraw_info = 1;
                 }
                 break;

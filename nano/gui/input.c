@@ -10,7 +10,9 @@
 #include "input.h"
 
 int mouse_x, mouse_y, mouse_buttons;
-int mouse_present;
+int mouse_present, mouse_via_bios;
+
+#define STUB_OFF 0xF800                 /* a far-return stub in the bounce */
 
 static volatile struct event queue[64];
 static volatile int q_head, q_tail;
@@ -99,14 +101,79 @@ static void aux_write(uint8_t v)
     inb(0x60);                                  /* its acknowledgement */
 }
 
+/* Send a command to the mouse and wait for its acknowledgement.  Returns 0
+   if the device answered, which is how we tell there is one at all. */
+static int aux_command(uint8_t v)
+{
+    int n;
+    kbd_wait_in();
+    outb(0x64, 0xD4);                           /* the next byte is for the mouse */
+    kbd_wait_in();
+    outb(0x60, v);
+    for (n = 0; n < 400000; n++)
+        if (inb(0x64) & 0x01)
+            return inb(0x60) == 0xFA ? 0 : -1;
+    return -1;
+}
+
+static int aux_read(uint8_t *out)
+{
+    int n;
+    for (n = 0; n < 2000000; n++)
+        if (inb(0x64) & 0x01) { *out = inb(0x60); return 0; }
+    return -1;
+}
+
+static void aux_flush(void)
+{
+    int n;
+    for (n = 0; n < 64 && (inb(0x64) & 0x01); n++)
+        inb(0x60);
+}
+
+/* Ask the firmware to start its own mouse emulation.  We hand it a stub
+   that does nothing but return, because we want the interrupt, not the
+   BIOS's callback: it cannot call into protected mode anyway. */
+static int bios_assist(void)
+{
+    struct rmcall r;
+    /* a far return instruction, somewhere the BIOS can reach */
+    nx_bounce[STUB_OFF] = 0xCB;
+
+    memset(&r, 0, sizeof r);
+    r.ax = 0xC205;                              /* initialise, 3-byte packets */
+    r.bx = 0x0300;
+    r.intno = 0x15;
+    sys_bios(&r);
+    if (r.flags & 1) return -1;
+
+    memset(&r, 0, sizeof r);
+    r.ax = 0xC207;                              /* the handler it should call */
+    r.es = nx_bounce_seg;
+    r.bx = STUB_OFF;
+    r.intno = 0x15;
+    sys_bios(&r);
+    if (r.flags & 1) return -1;
+
+    memset(&r, 0, sizeof r);
+    r.ax = 0xC200;                              /* and switch it on */
+    r.bx = 0x0100;
+    r.intno = 0x15;
+    sys_bios(&r);
+    if (r.flags & 1) return -1;
+    return 0;
+}
+
 int input_open(int width, int height)
 {
-    uint8_t status;
+    uint8_t status, b;
     mouse_max_x = width - 1;
     mouse_max_y = height - 1;
     mouse_x = width / 2;
     mouse_y = height / 2;
+    packet_n = 0;
 
+    aux_flush();
     kbd_wait_in();
     outb(0x64, 0xA8);                           /* switch the mouse port on */
     kbd_wait_in();
@@ -119,13 +186,26 @@ int input_open(int width, int height)
     outb(0x64, 0x60);
     kbd_wait_in();
     outb(0x60, status);
+    aux_flush();
 
-    aux_write(0xF6);                            /* sensible defaults */
-    aux_write(0xF4);                            /* start reporting */
+    /* Is there really a mouse on that port?  A reset is answered by an
+       acknowledgement, then AAh when it has tested itself. */
+    mouse_via_bios = 0;
+    if (aux_command(0xFF) == 0 && aux_read(&b) == 0 && b == 0xAA) {
+        aux_read(&b);                           /* its identity, if it offers one */
+        aux_command(0xF6);                      /* sensible defaults */
+        aux_command(0xF4);                      /* start reporting */
+        mouse_present = 1;
+    } else if (bios_assist() == 0) {
+        mouse_via_bios = 1;                     /* a USB mouse, through the BIOS */
+        mouse_present = 1;
+    } else {
+        mouse_present = 0;
+    }
+
     packet_n = 0;
     sys_set_mouse_handler(mouse_irq);
-    mouse_present = 1;
-    return 0;
+    return mouse_present ? 0 : -1;
 }
 
 void input_close(void)

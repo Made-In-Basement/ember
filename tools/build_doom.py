@@ -216,12 +216,16 @@ def build_app(name, src_files, out_name, extra_inc=()):
 def build_gui():
     import subprocess as sp
     sp.check_call([sys.executable, os.path.join(ROOT, 'tools', 'mkfont.py')])
+    sp.check_call([sys.executable, os.path.join(ROOT, 'tools', 'mktables.py')])
     d = os.path.join(ROOT, 'nano', 'gui')
     build_app('gui',
               [os.path.join(d, f) for f in ('draw.c', 'input.c', 'crystal.c',
-                                            'apps.c', 'shell.c')],
+                                            'music.c', 'apps.c', 'shell.c')]
+              + [os.path.join(ROOT, 'nano', 'player', 'paudio.c')],
               'EMBER.N32',
               extra_inc=(d, os.path.join(ROOT, 'build'),
+                         os.path.join(ROOT, 'nano', 'player'),
+                         os.path.join(ROOT, 'build', 'src_dl'),
                          os.path.join(ROOT, 'build', 'playerinc')))
 
 

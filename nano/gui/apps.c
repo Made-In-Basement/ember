@@ -203,12 +203,48 @@ void app_files(void)
     files_read(w);
 }
 
+/* ---------------------------------------------------------------- help */
+static const char *help_lines[] = {
+    "Windows key      open the crystal",
+    "Escape           close the menu, or the window in front",
+    "Tab              bring the window behind to the front",
+    "F1               this",
+    "F10              leave the desktop",
+    "",
+    "Click the crystal at the top to open the menu.  Click a",
+    "desktop icon once to pick it, again to open it.  Drag a",
+    "window by its title bar; the cross at the right closes it.",
+    "",
+    "In the music player: click a track to pick it, again to",
+    "play.  Space pauses.  The bar under the display seeks,",
+    "and + and - change the volume.",
+    0
+};
+
+static void help_draw(struct window *w)
+{
+    int y = w->y + 16, i;
+    text(F_TITLE, w->x + 22, y, "Getting around", AMBER_HOT);
+    y += text_height(F_TITLE) + 8;
+    fill(w->x + 22, y, w->w - 44, 1, EDGE);
+    y += 12;
+    for (i = 0; help_lines[i]; i++) {
+        text(F_NORMAL, w->x + 22, y, help_lines[i],
+             help_lines[i][0] && help_lines[i][17] == ' ' ? TEXT : TEXT);
+        y += text_height(F_NORMAL) + 1;
+    }
+}
+
+void app_help(void)
+{
+    win_open("Help", 470, 400, help_draw, 0);
+}
+
 /* ---------------------------------------------------------------- stubs */
 static void soon_draw(struct window *w)
 {
     text(F_NORMAL, w->x + 20, w->y + 24, "Not built yet.", TEXT_DIM);
 }
 
-void app_music(void) { win_open("Music", 380, 160, soon_draw, 0); }
 void app_text(void)  { win_open("Text Viewer", 460, 300, soon_draw, 0); }
 void app_doom(void)  { win_open("Doom", 380, 160, soon_draw, 0); }

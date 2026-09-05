@@ -40,7 +40,7 @@ static unsigned anim_start;
 static int hovered;
 
 static const char *items[] = {
-    "Files", "Music", "Text", "Doom", "About", "Exit to DOS", 0
+    "Files", "Music", "Text", "Doom", "Help", "About", "Exit to DOS", 0
 };
 #define ROW_H    34
 static int menu_sel = -1;

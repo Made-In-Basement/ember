@@ -40,8 +40,12 @@ static int16_t last_l, last_r;
 
 int audio_bitrate, audio_rate, audio_channels;
 int audio_peak_l, audio_peak_r;
-int audio_volume = 8;                   /* 0..10 */
+int audio_volume = 80;                  /* 0..100 */
 long audio_seconds, audio_total_seconds;
+
+/* the most recent samples, for whatever wants to draw the sound */
+int16_t audio_scope[SCOPE_LEN];
+volatile int audio_scope_pos;
 
 /* ---------------------------------------------------------------- input */
 static int refill(void)
@@ -64,7 +68,7 @@ static uint32_t rd32(const uint8_t *p) { return p[0] | (p[1] << 8) | ((uint32_t)
 static uint16_t rd16(const uint8_t *p) { return (uint16_t)(p[0] | (p[1] << 8)); }
 
 static int wav_bits = 16;
-static long wav_left;
+static long wav_left, wav_data_start, wav_data_bytes;
 
 static int wav_open(void)
 {
@@ -84,6 +88,8 @@ static int wav_open(void)
             if (len > 16) sys_lseek(fd, len - 16, SEEK_CUR);
         } else if (!memcmp(c, "data", 4)) {
             wav_left = (long)len;
+            wav_data_bytes = (long)len;
+            wav_data_start = sys_lseek(fd, 0, SEEK_CUR);
             break;
         } else {
             sys_lseek(fd, (long)len, SEEK_CUR);
@@ -237,8 +243,10 @@ int audio_pump(void)
         }
         last_l = (int16_t)l;
         last_r = (int16_t)r;
-        l = l * audio_volume / 10;
-        r = r * audio_volume / 10;
+        audio_scope[audio_scope_pos] = (int16_t)((l + r) / 2);
+        audio_scope_pos = (audio_scope_pos + 1) & (SCOPE_LEN - 1);
+        l = l * audio_volume / 100;
+        r = r * audio_volume / 100;
         ring[w * 2] = (int16_t)l;
         ring[w * 2 + 1] = (int16_t)r;
         if (l > pl) pl = l; else if (-l > pl) pl = -l;
@@ -259,6 +267,33 @@ int audio_pump(void)
     audio_seconds = file_size > 0 && audio_total_seconds > 0
                   ? file_pos * audio_total_seconds / file_size : 0;
     return alive;
+}
+
+/* Jump to a position, given in thousandths of the file.  An MP3 is found
+   again by letting the decoder resynchronise on the next frame header,
+   which is what makes seeking in one cheap; a WAV is exact. */
+void audio_seek_permille(int p)
+{
+    long target;
+    if (fd < 0 || file_size <= 0) return;
+    if (p < 0) p = 0;
+    if (p > 1000) p = 1000;
+    if (is_mp3) {
+        target = file_size / 1000 * p;
+        sys_lseek(fd, target, SEEK_SET);
+        file_pos = target;
+        mp3dec_init(&mp3);
+    } else {
+        long frame = dec_channels * (wav_bits / 8);
+        target = wav_data_bytes / 1000 * p;
+        target -= target % frame;
+        wav_left = wav_data_bytes - target;
+        sys_lseek(fd, wav_data_start + target, SEEK_SET);
+        file_pos = wav_data_start + target;
+    }
+    in_len = in_pos = 0;
+    dec_frames = dec_pos = 0;
+    rs_phase = 0;
 }
 
 void audio_decay_peaks(void)

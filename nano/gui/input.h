@@ -8,7 +8,7 @@ enum {
 
 struct event { int type, a, b; };        /* mouse: a,b = x,y.  key: a = scan, b = char */
 
-extern int mouse_x, mouse_y, mouse_buttons, mouse_present;
+extern int mouse_x, mouse_y, mouse_buttons, mouse_present, mouse_via_bios;
 extern int mouse_max_x, mouse_max_y;
 
 int  input_open(int width, int height);
@@ -23,8 +23,11 @@ int  next_event(struct event *e);
 #define K_DOWN  0x150
 #define K_LEFT  0x14B
 #define K_RIGHT 0x14D
-#define K_F1    0x3B
 #define K_F10   0x44
 #define K_TAB   0x0F
+#define K_WIN   0x15B                   /* the Windows key, left */
+#define K_WIN_R 0x15C
+#define K_MENU  0x15D                   /* the menu key beside it */
+#define K_F1    0x3B
 
 #endif

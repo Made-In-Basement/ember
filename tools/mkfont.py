@@ -26,6 +26,7 @@ FACES = [
     ("normal", "BarlowCondensed-Medium.ttf",   19),
     ("bold",   "BarlowCondensed-SemiBold.ttf", 19),
     ("title",  "BarlowCondensed-SemiBold.ttf", 24),
+    ("clock",  "BarlowCondensed-SemiBold.ttf", 40),
 ]
 FALLBACKS = ["Lato-Regular.ttf", "arial.ttf", "segoeui.ttf"]
 

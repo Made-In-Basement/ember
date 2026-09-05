@@ -49,7 +49,8 @@ extern void (*nx_irq1_fn)(void);
 
 void rm_int(struct rmcall *rc);
 void sys_bios(struct rmcall *r);        /* any interrupt, registers marshalled */
-int  sys_open(const char *path);        /* read-only; DOS handle or -1 */
+int  sys_open(const char *path);
+extern int sys_open_error;              /* DOS error from the last failure */        /* read-only; DOS handle or -1 */
 int  sys_create(const char *path);      /* create or truncate, open for writing */
 int  sys_write(int h, const void *buf, int n);
 int  sys_unlink(const char *path);

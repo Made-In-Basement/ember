@@ -44,7 +44,7 @@ void clock_start(void);
 unsigned now_ms(void);
 
 /* text */
-enum { F_SMALL, F_NORMAL, F_BOLD, F_TITLE };
+enum { F_SMALL, F_NORMAL, F_BOLD, F_TITLE, F_CLOCK, F_COUNT };
 int  text_width(int face, const char *s);
 int  text_height(int face);
 void text(int face, int x, int y, const char *s, uint32_t c);   /* y = top */

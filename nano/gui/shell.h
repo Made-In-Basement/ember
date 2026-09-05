@@ -37,8 +37,13 @@ void crystal_close(void);
 
 /* the applications the menu offers */
 void app_about(void);
+void app_help(void);
 void app_files(void);
 void app_music(void);
+int  music_tick(void);                  /* keeps the sound fed; 1 = redraw */
+void music_chime(void);                 /* the sound it makes on opening */
+int  music_active(void);                /* sound is playing: do not idle */
+void music_closed(int id);
 void app_text(void);
 void app_doom(void);
 

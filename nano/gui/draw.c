@@ -23,7 +23,7 @@ static int fb_pitch, fb_bpp;
 static int dmg_x0, dmg_y0, dmg_x1, dmg_y1;      /* what changed */
 static int cx0, cy0, cx1, cy1;                  /* the clip rectangle */
 
-static const struct font *faces[4];
+static const struct font *faces[F_COUNT];
 
 /* ---------------------------------------------------------------- setup */
 /* Walk the card's own list of modes and take the best true-colour one that
@@ -76,6 +76,7 @@ int draw_open(int want_w, int want_h)
     faces[F_NORMAL] = &font_normal;
     faces[F_BOLD] = &font_bold;
     faces[F_TITLE] = &font_title;
+    faces[F_CLOCK] = &font_clock;
     clip_none();
     damage_all();
     return 0;

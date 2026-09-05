@@ -45,6 +45,8 @@ void sys_bios(struct rmcall *r)
     memcpy(r, rc, sizeof *rc);
 }
 
+int sys_open_error;                     /* the DOS code, when one fails */
+
 int sys_open(const char *path)
 {
     size_t n = strlen(path);
@@ -53,7 +55,8 @@ int sys_open(const char *path)
     rc_init(0x3D, 0x00, 0x21);
     rc->dx = PATH_OFF;
     rm_int(rc);
-    return carry() ? -1 : rc->ax;
+    if (carry()) { sys_open_error = rc->ax; return -1; }
+    return rc->ax;
 }
 
 int sys_read(int h, void *buf, int n)
