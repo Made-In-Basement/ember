@@ -107,6 +107,15 @@ int popup_event(struct event *e)
         return 1;
     }
     if (e->type == EV_KEY) {
+        if (e->a == K_DOWN) { sel = (sel + 1) % count; return 1; }
+        if (e->a == K_UP)   { sel = (sel <= 0 ? count : sel) - 1; return 1; }
+        if (e->a == K_ENTER && sel >= 0) {
+            void (*fn)(int) = chosen;
+            int item = sel;
+            popup_close();
+            if (fn) fn(item);
+            return 1;
+        }
         popup_close();
         return 1;
     }

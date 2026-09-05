@@ -184,6 +184,26 @@ void crystal_close(void)
 /* returns 1 if it swallowed the event */
 int crystal_event(struct event *e)
 {
+    if (e->type == EV_KEY && crystal_is_open()) {
+        int n = 0;
+        while (items[n]) n++;
+        if (e->a == K_DOWN) {
+            menu_sel = (menu_sel + 1) % n;
+            return 1;
+        }
+        if (e->a == K_UP) {
+            menu_sel = (menu_sel <= 0 ? n : menu_sel) - 1;
+            return 1;
+        }
+        if (e->a == K_ENTER) {
+            int item = menu_sel;
+            crystal_close();
+            if (item >= 0) shell_run_menu(item);
+            return 1;
+        }
+        if (e->a == K_ESC) { crystal_close(); return 1; }
+        return 0;
+    }
     if (e->type == EV_MOUSE_MOVE) {
         int was = hovered, wsel = menu_sel;
         hovered = crystal_hit(e->a, e->b);

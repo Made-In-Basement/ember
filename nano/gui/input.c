@@ -40,10 +40,10 @@ int next_event(struct event *e)
 /* ---------------------------------------------------------------- mouse */
 static uint8_t packet[3];
 static int packet_n;
+static void drain_8042(void);       /* both devices arrive through this */
 
-static void mouse_irq(void)
+static void mouse_byte(uint8_t b)
 {
-    uint8_t b = inb(0x60);
     int dx, dy, buttons;
 
     if (packet_n == 0 && !(b & 0x08))
@@ -59,6 +59,11 @@ static void mouse_irq(void)
     if (packet[0] & 0x10) dx |= ~0xFF;          /* the sign lives in byte 0 */
     if (packet[0] & 0x20) dy |= ~0xFF;
     if (packet[0] & 0xC0) return;               /* overflow: the packet is junk */
+
+    /* A gentle acceleration: a slow movement stays precise, a quick one
+       crosses the screen without a second push. */
+    if (dx > 6 || dx < -6) dx *= 2;
+    if (dy > 6 || dy < -6) dy *= 2;
 
     mouse_x += dx;
     mouse_y -= dy;                              /* the mouse counts up, screens down */
@@ -202,6 +207,8 @@ int input_open(int width, int height)
     if (aux_command(0xFF) == 0 && aux_read(&b) == 0 && b == 0xAA) {
         aux_read(&b);                           /* its identity, if it offers one */
         aux_command(0xF6);                      /* sensible defaults */
+        aux_command(0xE8); aux_command(0x03);   /* the finest resolution */
+        aux_command(0xF3); aux_command(0x64);   /* a hundred reports a second */
         aux_command(0xF4);                      /* start reporting */
         mouse_present = 1;
     } else if (bios_assist() == 0) {
@@ -212,7 +219,7 @@ int input_open(int width, int height)
     }
 
     packet_n = 0;
-    sys_set_mouse_handler(mouse_irq);
+    sys_set_mouse_handler(drain_8042);
     return mouse_present ? 0 : -1;
 }
 
@@ -238,9 +245,8 @@ static const char shifted[128] = {
     'B','N','M','<','>','?', 0, '*', 0, ' ',
 };
 
-static void kbd_irq(void)
+static void key_byte(uint8_t sc)
 {
-    uint8_t sc = inb(0x60);
     int ch = 0;
     if (sc == 0xE0) { e0 = 1; return; }
     if (sc & 0x80) {
@@ -256,7 +262,25 @@ static void kbd_irq(void)
     e0 = 0;
 }
 
+/* The keyboard and the mouse are the same controller and the same data
+   port.  Bit 5 of the status says a byte came from the mouse, and a
+   handler that does not look will happily eat the other device's bytes.
+   Both interrupts come here, so it does not matter which one fired. */
+static void drain_8042(void)
+{
+    int guard = 32;
+    while (guard--) {
+        uint8_t status = inb(0x64);
+        uint8_t b;
+        if (!(status & 0x01))
+            break;                              /* nothing waiting */
+        b = inb(0x60);
+        if (status & 0x20) mouse_byte(b);
+        else key_byte(b);
+    }
+}
+
 void input_start_keyboard(void)
 {
-    sys_set_irq_handlers(0, kbd_irq);
+    sys_set_irq_handlers(0, drain_8042);
 }

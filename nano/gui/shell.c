@@ -444,6 +444,21 @@ static void handle(struct event *e)
         }
         if (e->a == K_F1) { app_help(); break; }
         if (e->a == K_F10) { quit_requested = 1; break; }
+        if (focused < 0 || !windows[focused].event) {
+            /* nothing is listening: the arrows walk the desktop icons */
+            if (e->a == K_DOWN) {
+                icon_sel = (icon_sel + 1) % ICON_COUNT;
+                break;
+            }
+            if (e->a == K_UP) {
+                icon_sel = (icon_sel <= 0 ? ICON_COUNT : icon_sel) - 1;
+                break;
+            }
+            if (e->a == K_ENTER && icon_sel >= 0) {
+                shell_run_menu(icon_sel);
+                break;
+            }
+        }
         if (e->a == K_TAB && window_count > 1) {        /* through the windows */
             raise_window(z_order[0]);
             break;
