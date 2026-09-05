@@ -109,6 +109,17 @@ int sys_write(int h, const void *buf, int n)
     return done;
 }
 
+int sys_mkdir(const char *path)
+{
+    size_t n = strlen(path);
+    if (n > 120) return -1;
+    memcpy(nx_bounce + PATH_OFF, path, n + 1);
+    rc_init(0x39, 0x00, 0x21);
+    rc->dx = PATH_OFF;
+    rm_int(rc);
+    return carry() ? -1 : 0;
+}
+
 int sys_unlink(const char *path)
 {
     size_t n = strlen(path);

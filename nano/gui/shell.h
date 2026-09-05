@@ -58,6 +58,8 @@ int  popup_is_open(void);
 int  popup_event(struct event *e);
 
 void app_pictures(void);                /* choose a picture for the background */
+void app_calc(void);
+void app_prompt(void);
 void app_about(void);
 void app_help(void);
 void app_files(void);

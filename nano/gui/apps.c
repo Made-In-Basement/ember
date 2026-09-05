@@ -52,157 +52,6 @@ void app_about(void)
     win_open("About Ember", 430, 300, about_draw, 0);
 }
 
-/* ---------------------------------------------------------------- files */
-#define MAX_FILES 256
-struct file_row { char name[40]; uint32_t size; int is_dir; };
-static struct file_row rows[MAX_WINDOWS][MAX_FILES];
-
-static void files_read(struct window *w)
-{
-    struct file_row *r = rows[0];
-    struct dos_find f;
-    char pattern[128];
-    int n = 0, rc;
-    void *self = w->data;
-    r = (struct file_row *)self;
-
-    strcpy(pattern, w->path);
-    if (pattern[0] && pattern[strlen(pattern) - 1] != '\\')
-        strcat(pattern, "\\");
-    strcat(pattern, "*.*");
-    for (rc = sys_findfirst(pattern, &f); rc == 0 && n < MAX_FILES;
-         rc = sys_findnext(&f)) {
-        char longname[84];
-        if (f.name[0] == '.' && f.name[1] == 0) continue;
-        if (f.attr & 0x08) continue;                    /* the volume label */
-        if (sys_long_name(longname, sizeof longname) > 0)
-            strncpy(r[n].name, longname, sizeof r[n].name - 1);
-        else
-            strncpy(r[n].name, f.name, sizeof r[n].name - 1);
-        r[n].name[sizeof r[n].name - 1] = 0;
-        r[n].size = f.size;
-        r[n].is_dir = (f.attr & 0x10) != 0;
-        n++;
-    }
-    /* directories first, then by name */
-    {
-        int i, j;
-        for (i = 1; i < n; i++) {
-            struct file_row key = r[i];
-            for (j = i; j > 0; j--) {
-                struct file_row *p = &r[j - 1];
-                int after;
-                if (p->is_dir != key.is_dir) after = !p->is_dir;
-                else after = strcasecmp(p->name, key.name) > 0;
-                if (!after) break;
-                r[j] = *p;
-            }
-            r[j] = key;
-        }
-    }
-    w->count = n;
-    if (w->sel >= n) w->sel = n ? n - 1 : 0;
-    if (w->top > w->sel) w->top = w->sel;
-}
-
-static void files_draw(struct window *w)
-{
-    struct file_row *r = (struct file_row *)w->data;
-    int rows_shown = (w->h - 46) / ROW_H, i;
-    char buf[64];
-
-    /* the path, along the top */
-    fill(w->x, w->y, w->w, 30, PANEL_HI);
-    fill(w->x, w->y + 29, w->w, 1, EDGE);
-    text(F_SMALL, w->x + 14, w->y + 6,
-         w->path[0] ? w->path : "\\", AMBER);
-
-    if (w->sel < w->top) w->top = w->sel;
-    if (w->sel >= w->top + rows_shown) w->top = w->sel - rows_shown + 1;
-
-    for (i = 0; i < rows_shown; i++) {
-        int idx = w->top + i;
-        int ry = w->y + 36 + i * ROW_H;
-        if (idx >= w->count) break;
-        if (idx == w->sel) {
-            fill(w->x + 6, ry - 3, w->w - 12, ROW_H, 0x2A1D0C);
-            fill(w->x + 6, ry - 3, 2, ROW_H, AMBER);
-        }
-        text_clipped(F_NORMAL, w->x + 18, ry, w->w - 130, r[idx].name,
-                     r[idx].is_dir ? AMBER : (idx == w->sel ? AMBER_HOT : TEXT));
-        if (r[idx].is_dir) {
-            text(F_SMALL, w->x + w->w - 60, ry + 2, "folder", TEXT_DIM);
-        } else {
-            if (r[idx].size >= 1024)
-                snprintf(buf, sizeof buf, "%u KB", (unsigned)(r[idx].size / 1024));
-            else
-                snprintf(buf, sizeof buf, "%u B", (unsigned)r[idx].size);
-            text(F_SMALL, w->x + w->w - 20 - text_width(F_SMALL, buf), ry + 2,
-                 buf, TEXT_DIM);
-        }
-    }
-    /* a scroll indicator when there is more than fits */
-    if (w->count > rows_shown) {
-        int track = w->h - 46;
-        int bar = track * rows_shown / w->count;
-        int pos = track * w->top / w->count;
-        if (bar < 20) bar = 20;
-        fill(w->x + w->w - 6, w->y + 36 + pos, 3, bar, AMBER_DIM);
-    }
-}
-
-static void files_enter(struct window *w)
-{
-    struct file_row *r = (struct file_row *)w->data;
-    if (w->sel >= w->count) return;
-    if (!r[w->sel].is_dir) return;
-    if (!strcmp(r[w->sel].name, "..")) {
-        char *p = strrchr(w->path, '\\');
-        if (p && p != w->path) *p = 0;
-        else w->path[0] = 0;
-    } else {
-        if (w->path[0] && w->path[strlen(w->path) - 1] != '\\')
-            strcat(w->path, "\\");
-        strcat(w->path, r[w->sel].name);
-    }
-    w->sel = 0;
-    w->top = 0;
-    files_read(w);
-}
-
-static int files_event(struct window *w, struct event *e)
-{
-    int rows_shown = (w->h - 46) / ROW_H;
-    if (e->type == EV_KEY) {
-        if (e->a == K_UP && w->sel > 0) w->sel--;
-        else if (e->a == K_DOWN && w->sel + 1 < w->count) w->sel++;
-        else if (e->a == K_ENTER) files_enter(w);
-        return 1;
-    }
-    if (e->type == EV_MOUSE_DOWN && e->b >= 36) {
-        int idx = w->top + (e->b - 36) / ROW_H;
-        if (idx < w->count) {
-            if (idx == w->sel) files_enter(w);
-            else w->sel = idx;
-        }
-        return 1;
-    }
-    (void)rows_shown;
-    return 0;
-}
-
-void app_files(void)
-{
-    static struct file_row storage[MAX_FILES];
-    int id = win_open("Files", 520, 380, files_draw, files_event);
-    struct window *w;
-    if (id < 0) return;
-    w = win_at(id);
-    w->data = storage;
-    w->path[0] = 0;
-    files_read(w);
-}
-
 /* ---------------------------------------------------------------- help */
 static const char *help_lines[] = {
     "Windows key      open the crystal",
@@ -285,7 +134,7 @@ static void pics_draw(struct window *w)
     int rows = (w->h - 44) / ROW_H, i;
     text(F_SMALL, w->x + 16, w->y + 10,
          pic_count ? "Pick a picture for the background"
-                   : "No .BMP files found in \WALL or the root", TEXT_DIM);
+                   : "No .BMP files found in \\WALL or the root", TEXT_DIM);
     fill(w->x + 12, w->y + 32, w->w - 24, 1, EDGE);
     if (w->sel < w->top) w->top = w->sel;
     if (w->sel >= w->top + rows) w->top = w->sel - rows + 1;
@@ -341,7 +190,7 @@ void app_pictures(void)
 {
     struct window *w;
     int id;
-    pics_scan("\WALL");
+    pics_scan("\\WALL");
     if (pic_count == 0) pics_scan("");
     id = win_open("Background", 420, 340, pics_draw, pics_event);
     if (id < 0) return;

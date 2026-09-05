@@ -154,13 +154,14 @@ static void draw_window(struct window *w, int is_focused, int with_backdrop)
 /* ---------------------------------------------------------------- icons */
 struct desk_icon { const char *label; int kind; };
 static const struct desk_icon icons[] = {
-    { "Files",  0 },
-    { "Music",  1 },
-    { "Text",   2 },
-    { "Doom",   3 },
-    { "About",  4 },
+    { "Files",      0 },
+    { "Music",      1 },
+    { "Prompt",     2 },
+    { "Calculator", 3 },
+    { "Doom",       3 },
+    { "About",      4 },
 };
-#define ICON_COUNT 5
+#define ICON_COUNT 6
 #define ICON_W     96
 #define ICON_H     92
 #define ICON_X     28
@@ -361,11 +362,12 @@ void shell_run_menu(int item)
     switch (item) {
     case 0: app_files(); break;
     case 1: app_music(); break;
-    case 2: app_text(); break;
-    case 3: app_doom(); break;
-    case 4: app_help(); break;
-    case 5: app_about(); break;
-    case 6: quit_requested = 1; break;
+    case 2: app_prompt(); break;
+    case 3: app_calc(); break;
+    case 4: app_doom(); break;
+    case 5: app_help(); break;
+    case 6: app_about(); break;
+    case 7: quit_requested = 1; break;
     default: break;
     }
 }

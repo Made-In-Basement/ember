@@ -54,6 +54,7 @@ extern int sys_open_error;              /* DOS error from the last failure */   
 int  sys_create(const char *path);      /* create or truncate, open for writing */
 int  sys_write(int h, const void *buf, int n);
 int  sys_unlink(const char *path);
+int  sys_mkdir(const char *path);
 int  sys_read(int h, void *buf, int n);
 long sys_lseek(int h, long off, int whence);
 int  sys_close(int h);
