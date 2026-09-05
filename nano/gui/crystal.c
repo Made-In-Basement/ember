@@ -25,10 +25,13 @@
 #define TEXT        0xD8C8B0
 #define TEXT_DIM    0x8A7C68
 
-#define CRYSTAL_W   104         /* the whole gem */
-#define CRYSTAL_H   78
-#define SPLIT_MAX   150         /* how far each half travels */
-#define ANIM_MS     260         /* how long the break takes */
+#define CRYSTAL_W   92          /* the whole gem */
+#define CRYSTAL_H   86
+#define MENU_W      260
+#define SPLIT_GAP   10          /* clearance between a half and the menu */
+/* each half ends up just clear of the menu, so the menu occupies the gap */
+#define SPLIT_MAX   (MENU_W + SPLIT_GAP * 2)
+#define ANIM_MS     300         /* how long the break takes */
 
 int crystal_x, crystal_y = 6;
 
@@ -39,7 +42,6 @@ static int hovered;
 static const char *items[] = {
     "Files", "Music", "Text", "Doom", "About", "Exit to DOS", 0
 };
-#define MENU_W   260
 #define ROW_H    34
 static int menu_sel = -1;
 
