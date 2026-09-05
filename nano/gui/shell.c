@@ -36,6 +36,7 @@ static int focused = -1;
 
 static int drag_win = -1, drag_dx, drag_dy;
 static int quit_requested;
+static int want_width = 1920, want_height = 1200;
 
 /* ---------------------------------------------------------------- windows */
 struct window *win_at(int id) { return &windows[id]; }
@@ -246,12 +247,7 @@ static int icon_hit(int x, int y)
 /* ---------------------------------------------------------------- desktop */
 static void draw_desktop(void)
 {
-    int i;
-    vgradient(0, 0, scr_w, scr_h, BG_TOP, BG_BOTTOM);
-    for (i = 0; i < scr_w; i += 40)
-        fill(i, 0, 1, scr_h, GRID);
-    for (i = 0; i < scr_h; i += 40)
-        fill(0, i, scr_w, 1, GRID);
+    wall_draw();
     draw_icons();
 }
 
@@ -356,6 +352,7 @@ static void draw_all(void)
         draw_window(&windows[z_order[i]], z_order[i] == focused, 1);
     draw_bar();
     crystal_draw();
+    popup_draw();
 }
 
 /* ---------------------------------------------------------------- events */
@@ -373,9 +370,42 @@ void shell_run_menu(int item)
     }
 }
 
+static void wall_chosen(int item)
+{
+    if (item == wall_choice_count()) {
+        app_pictures();                         /* a picture off the disk */
+    } else {
+        wall_set(item);
+        wall_save();
+    }
+}
+
+static void desktop_menu(int x, int y)
+{
+    static const char *items[8];
+    static int ticks[8];
+    int n = wall_choice_count(), i;
+    for (i = 0; i < n; i++) {
+        items[i] = wall_name(i);
+        ticks[i] = (wall_kind == i);
+    }
+    items[n] = wall_name(WALL_PICTURE);
+    ticks[n] = (wall_kind == WALL_PICTURE);
+    popup_open(x, y, items, ticks, n + 1, wall_chosen);
+}
+
 static void handle(struct event *e)
 {
     int id;
+    if (popup_event(e))
+        return;
+    if (e->type == EV_RIGHT_DOWN) {
+        if (e->b >= BAR_H && window_hit(e->a, e->b) < 0) {
+            crystal_close();
+            desktop_menu(e->a, e->b);
+        }
+        return;
+    }
     if (crystal_event(e))
         return;
 
@@ -459,14 +489,33 @@ int main(int argc, char **argv)
     struct event e;
     int last_x = -1, last_y = -1;
     unsigned last_clock = 0;
-    (void)argc; (void)argv;
 
-    if (draw_open(1280, 1024) != 0) {
+    /* "EMBER 1024" or "EMBER 1920x1080" asks for a particular size */
+    {
+        int w = 1920, h = 1200, n = 0, i;
+        const char *a = argc > 1 ? argv[1] : 0;
+        if (a) {
+            for (i = 0; a[i] >= '0' && a[i] <= '9'; i++) n = n * 10 + (a[i] - '0');
+            if (n >= 640) {
+                w = n;
+                h = n * 3 / 4;
+                if (a[i] == 'x' || a[i] == 'X') {
+                    int m = 0;
+                    for (i++; a[i] >= '0' && a[i] <= '9'; i++) m = m * 10 + (a[i] - '0');
+                    if (m >= 480) h = m;
+                }
+            }
+        }
+        want_width = w;
+        want_height = h;
+    }
+    if (draw_open(want_width, want_height) != 0) {
         printf("The graphics card offers no true-colour mode with a linear\n"
                "framebuffer; the desktop needs one.\n");
         return 1;
     }
     clock_start();
+    wall_load_config();
     input_open(scr_w, scr_h);
     input_start_keyboard();
     crystal_x = scr_w / 2;

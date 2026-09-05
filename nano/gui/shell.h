@@ -36,6 +36,28 @@ void crystal_toggle(void);
 void crystal_close(void);
 
 /* the applications the menu offers */
+/* the background */
+enum { WALL_EMBER, WALL_CHARCOAL, WALL_BLUE, WALL_FOREST, WALL_PLUM,
+       WALL_PICTURE = 100 };
+extern int wall_kind;
+extern char wall_file[96];
+void wall_draw(void);
+void wall_set(int kind);
+int  wall_load(const char *path);
+int  wall_choice_count(void);
+const char *wall_name(int kind);
+void wall_save(void);
+void wall_load_config(void);
+
+/* the menu that appears where you right-click */
+void popup_open(int x, int y, const char **items, const int *ticks, int n,
+                void (*on_choice)(int));
+void popup_close(void);
+void popup_draw(void);
+int  popup_is_open(void);
+int  popup_event(struct event *e);
+
+void app_pictures(void);                /* choose a picture for the background */
 void app_about(void);
 void app_help(void);
 void app_files(void);

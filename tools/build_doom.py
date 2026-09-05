@@ -220,7 +220,8 @@ def build_gui():
     d = os.path.join(ROOT, 'nano', 'gui')
     build_app('gui',
               [os.path.join(d, f) for f in ('draw.c', 'input.c', 'crystal.c',
-                                            'music.c', 'apps.c', 'shell.c')]
+                                            'wall.c', 'menu.c', 'music.c',
+                                            'apps.c', 'shell.c')]
               + [os.path.join(ROOT, 'nano', 'player', 'paudio.c')],
               'EMBER.N32',
               extra_inc=(d, os.path.join(ROOT, 'build'),

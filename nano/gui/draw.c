@@ -42,9 +42,20 @@ static int pick_mode(int want_w, int want_h, struct vbe_mode *best)
         if (!m.framebuffer) continue;                   /* must be linear */
         if (m.bpp != 32 && m.bpp != 24 && m.bpp != 16) continue;
         if (m.width > want_w || m.height > want_h) continue;
-        score = m.width * m.height;
-        if (m.bpp == 32) score += 4;                    /* prefer 32, then 24 */
-        else if (m.bpp == 24) score += 2;
+        if (m.width < 640 || m.height < 480) continue;
+        /* A screen that is not the shape of the panel gets stretched to fit
+           it, so a widescreen mode is worth more than a bigger square one. */
+        {
+            int aspect = m.width * 100 / m.height, shape;
+            if (aspect >= 172 && aspect <= 182) shape = 3;          /* 16:9 */
+            else if (aspect >= 155 && aspect <= 165) shape = 2;     /* 16:10 */
+            else if (aspect >= 128 && aspect <= 136) shape = 1;     /* 4:3 */
+            else shape = 0;
+            /* the shape decides first, the size only settles ties within it */
+            score = shape * 4000000 + m.width * m.height;
+            if (m.bpp == 32) score += 4;                /* prefer 32, then 24 */
+            else if (m.bpp == 24) score += 2;
+        }
         if (score > best_score) {
             best_score = score;
             found = mode;

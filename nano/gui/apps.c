@@ -248,3 +248,104 @@ static void soon_draw(struct window *w)
 
 void app_text(void)  { win_open("Text Viewer", 460, 300, soon_draw, 0); }
 void app_doom(void)  { win_open("Doom", 380, 160, soon_draw, 0); }
+
+/* ---------------------------------------------------------------- pictures */
+/* A short list of the BMP files on the disk, so a background can be picked
+   without typing a path.  It looks in \WALL first, then the root. */
+#define MAX_PICS 64
+static char pic_names[MAX_PICS][40];
+static char pic_dir[40];
+static int pic_count;
+
+static void pics_scan(const char *where)
+{
+    struct dos_find f;
+    char pattern[80];
+    int rc;
+    pic_count = 0;
+    strncpy(pic_dir, where, sizeof pic_dir - 1);
+    pic_dir[sizeof pic_dir - 1] = 0;
+    strcpy(pattern, pic_dir);
+    if (pattern[0] && pattern[strlen(pattern) - 1] != '\\') strcat(pattern, "\\");
+    strcat(pattern, "*.BMP");
+    for (rc = sys_findfirst(pattern, &f); rc == 0 && pic_count < MAX_PICS;
+         rc = sys_findnext(&f)) {
+        char longname[84];
+        const char *use = f.name;
+        if (f.attr & 0x18) continue;
+        if (sys_long_name(longname, sizeof longname) > 0) use = longname;
+        strncpy(pic_names[pic_count], use, sizeof pic_names[0] - 1);
+        pic_names[pic_count][sizeof pic_names[0] - 1] = 0;
+        pic_count++;
+    }
+}
+
+static void pics_draw(struct window *w)
+{
+    int rows = (w->h - 44) / ROW_H, i;
+    text(F_SMALL, w->x + 16, w->y + 10,
+         pic_count ? "Pick a picture for the background"
+                   : "No .BMP files found in \WALL or the root", TEXT_DIM);
+    fill(w->x + 12, w->y + 32, w->w - 24, 1, EDGE);
+    if (w->sel < w->top) w->top = w->sel;
+    if (w->sel >= w->top + rows) w->top = w->sel - rows + 1;
+    for (i = 0; i < rows; i++) {
+        int idx = w->top + i, ry = w->y + 40 + i * ROW_H;
+        if (idx >= pic_count) break;
+        if (idx == w->sel) {
+            fill(w->x + 8, ry - 2, w->w - 16, ROW_H, 0x2A1D0C);
+            fill(w->x + 8, ry - 2, 3, ROW_H, AMBER);
+        }
+        text_clipped(F_NORMAL, w->x + 22, ry - 2, w->w - 40, pic_names[idx],
+                     idx == w->sel ? AMBER_HOT : TEXT);
+    }
+}
+
+static void pics_use(struct window *w)
+{
+    char path[128];
+    if (w->sel < 0 || w->sel >= pic_count) return;
+    path[0] = 0;
+    if (pic_dir[0]) {
+        strcpy(path, pic_dir);
+        if (path[strlen(path) - 1] != '\\') strcat(path, "\\");
+    }
+    strcat(path, pic_names[w->sel]);
+    if (wall_load(path) == 0) {
+        wall_save();
+        damage_all();
+    }
+}
+
+static int pics_event(struct window *w, struct event *e)
+{
+    if (e->type == EV_KEY) {
+        if (e->a == K_UP && w->sel > 0) w->sel--;
+        else if (e->a == K_DOWN && w->sel + 1 < pic_count) w->sel++;
+        else if (e->a == K_ENTER) pics_use(w);
+        else return 0;
+        return 1;
+    }
+    if (e->type == EV_MOUSE_DOWN && e->b >= 40) {
+        int idx = w->top + (e->b - 40) / ROW_H;
+        if (idx < pic_count) {
+            if (idx == w->sel) pics_use(w);
+            else w->sel = idx;
+        }
+        return 1;
+    }
+    return 0;
+}
+
+void app_pictures(void)
+{
+    struct window *w;
+    int id;
+    pics_scan("\WALL");
+    if (pic_count == 0) pics_scan("");
+    id = win_open("Background", 420, 340, pics_draw, pics_event);
+    if (id < 0) return;
+    w = win_at(id);
+    w->sel = 0;
+    w->top = 0;
+}
