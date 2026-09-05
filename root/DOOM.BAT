@@ -1,0 +1,4 @@
+@ECHO OFF
+CD \DOOM
+NDOOM
+CD \

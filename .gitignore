@@ -1,0 +1,25 @@
+# Build output: disk images, object files, downloaded sources, generated
+# headers.  Everything here is reproducible with build.py and tools/.
+build/
+
+# Programs built from source by tools/build_doom.py
+root/*.N32
+root/DOOM/*.N32
+
+# Third-party game data, not ours to redistribute.  GAMES/ holds commercial
+# titles kept locally for testing; they must never leave this machine.
+GAMES/
+root/GAMES/
+root/DOOM/DOOM.EXE
+root/DOOM/SETUP.EXE
+root/DOOM/*.WAD
+root/DOOM/README.TXT
+
+# Written by the running system
+root/EMBER.LOG
+
+# Editors and the operating system underneath
+*.swp
+*~
+Thumbs.db
+desktop.ini

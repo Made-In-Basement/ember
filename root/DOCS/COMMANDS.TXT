@@ -1,0 +1,62 @@
+Ember command reference
+=========================
+
+DIR [path]        List the files in the current (or given) directory.
+                  Press Esc to stop a long listing.
+CD [path]         Change directory.  CD alone prints the current path.
+                  CD \ goes to the root, CD .. to the parent, and paths
+                  such as CD \DOCS or CD DOCS\SUB work as in DOS.
+TYPE file         Print a text file.  Press Esc to stop.
+ECHO text         Print text.  ECHO. prints an empty line.
+                  ECHO OFF / ECHO ON control command echo in batch files.
+CLS               Clear the screen.
+COLOR bf          Set screen colours: two hex digits, background then
+                  foreground (COLOR 1F = white on blue).  COLOR alone resets.
+TIME              Show the real-time-clock time.
+DATE              Show the date.
+SPEAKER [ON|OFF]
+    Play PC speaker sound through the sound chip.  Laptops have no
+    beeper, so old games that make sound this way are silent without
+    it.  Type it by hand before starting a game; it is not automatic.
+    IOBPTEST checks that this processor supports it.
+
+COPY <source> <destination>
+    Copy a file.  COPY README.TXT NOTES.TXT
+
+DEL <name>            (also ERASE)
+    Delete a file.
+
+MEM               Report conventional and extended memory.
+VER               Show the version.
+BEEP              Beep the PC speaker.
+PAUSE             Wait for a key press.
+REM               Comment line (for batch files).
+WIN [mode]        Start the graphical shell.  Default 800x600; the mode can
+                  be 1024, 800, 640 or LOW (320x200 VGA).
+                  Ctrl+Esc opens the Start menu, Esc closes the active
+                  window, Tab switches windows, F1 shows About.
+PLAY file.wav     Play a WAV file (PCM, 8/16-bit, mono/stereo, 8-48 kHz)
+                  through the HD Audio sound chip.  Esc stops.
+PLAY notes        Play notes on the PC speaker, e.g. PLAY T120 L8 C E G > C
+                  (A-G notes with # or -, O octave, L length, T tempo,
+                  > < octave up/down, R rest, . dotted).
+SOUND             Show what the sound driver found.  SOUND DEBUG prints
+                  every step of the probe (useful on new hardware).
+                  The same trace, plus the video mode and mouse status, is
+                  written to EMBER.LOG on this disk after every sound
+                  command and when the graphical shell exits.
+REBOOT            Restart the computer.
+SHUTDOWN          Power the computer off (APM).
+HELP or ?         Short command summary.
+
+name [args]       Run NAME.COM, NAME.EXE or NAME.BAT (tried in that order).
+                  The arguments are passed in the PSP command tail, as in
+                  DOS.  Programs may EXEC other programs.
+TRACE             Toggle logging of every INT 21h call into EMBER.LOG.
+
+Batch files
+-----------
+Lines are executed one after another.  A leading @ hides the echo of that
+line; lines starting with : are labels and are ignored.  AUTOEXEC.BAT in
+the root directory runs automatically at boot.  Hold Shift while booting
+to skip it.

@@ -1,0 +1,28 @@
+How Ember works
+=================
+
+Boot sector (sector 0)
+  A 512-byte FAT boot record.  The BIOS loads it at 0000:7C00.  It reads
+  the kernel from the reserved sectors that follow it, using INT 13h LBA
+  reads when the BIOS offers them (USB and hard disks) and CHS reads
+  otherwise (floppies), then jumps to 0800:0000.
+
+Kernel (reserved sectors 1..N)
+  One flat 16-bit real-mode program:
+    console.asm  BIOS teletype output, keyboard input, line editing
+    disk.asm     sector reads with retries, LBA and CHS
+    fat.asm      read-only FAT12/FAT16: directories, cluster chains, paths
+    dos.asm      INT 21h services and the .COM program loader
+    shell.asm    the command interpreter and built-in commands
+    gfx.asm      VESA/VGA graphics, BIOS font text, palette
+    mouse.asm    PS/2 mouse driver (8042 controller, IRQ12)
+    icons.asm    icons and the mouse pointer as ASCII art
+    gui.asm      desktop, taskbar, Start menu, window manager
+    apps.asm     My Computer, Notepad, Calculator, About
+
+The filesystem is the real FAT volume on the disk, so the USB stick can
+be mounted in Windows and files copied onto it.  The kernel lives in
+reserved sectors that FAT never touches.
+
+Programs run as .COM files: loaded at 2000:0100 with a Program Segment
+Prefix, exactly like DOS, and talk to the kernel through INT 21h.
