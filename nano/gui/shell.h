@@ -31,6 +31,7 @@ void crystal_draw(void);
 int  crystal_event(struct event *e);
 int  crystal_hit(int x, int y);
 int  crystal_busy(void);
+int  crystal_reach(void);
 int  crystal_is_open(void);
 void crystal_toggle(void);
 void crystal_close(void);

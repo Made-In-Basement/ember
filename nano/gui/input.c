@@ -7,6 +7,7 @@
  */
 #include <nanolibc.h>
 #include "nano.h"
+#include "draw.h"
 #include "input.h"
 
 int mouse_x, mouse_y, mouse_buttons;
@@ -103,25 +104,32 @@ static void aux_write(uint8_t v)
 
 /* Send a command to the mouse and wait for its acknowledgement.  Returns 0
    if the device answered, which is how we tell there is one at all. */
+/* Wait for the controller to have something to say, but not for long: on
+   a machine with no PS/2 mouse nothing ever answers, and every millisecond
+   spent here is a millisecond of blank screen at start-up. */
+static int aux_wait(unsigned ms)
+{
+    unsigned until = now_ms() + ms;
+    while (now_ms() < until)
+        if (inb(0x64) & 0x01) return 0;
+    return -1;
+}
+
 static int aux_command(uint8_t v)
 {
-    int n;
     kbd_wait_in();
     outb(0x64, 0xD4);                           /* the next byte is for the mouse */
     kbd_wait_in();
     outb(0x60, v);
-    for (n = 0; n < 400000; n++)
-        if (inb(0x64) & 0x01)
-            return inb(0x60) == 0xFA ? 0 : -1;
-    return -1;
+    if (aux_wait(40) != 0) return -1;
+    return inb(0x60) == 0xFA ? 0 : -1;
 }
 
 static int aux_read(uint8_t *out)
 {
-    int n;
-    for (n = 0; n < 2000000; n++)
-        if (inb(0x64) & 0x01) { *out = inb(0x60); return 0; }
-    return -1;
+    if (aux_wait(300) != 0) return -1;
+    *out = inb(0x60);
+    return 0;
 }
 
 static void aux_flush(void)

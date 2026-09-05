@@ -35,6 +35,7 @@ static int z_order[MAX_WINDOWS];
 static int focused = -1;
 
 static int drag_win = -1, drag_dx, drag_dy;
+#define drag_active (drag_win >= 0)
 static int quit_requested;
 static int want_width = 1920, want_height = 1200;
 
@@ -396,20 +397,32 @@ static void desktop_menu(int x, int y)
     popup_open(x, y, items, ticks, n + 1, wall_chosen);
 }
 
+/* How much has to be repainted: nothing, the windows, or all of it.  A
+   mouse move on its own needs none of it -- only the pointer moves -- and
+   that is the difference between a smooth pointer and a crawling one. */
+enum { REDRAW_NONE, REDRAW_WINDOWS, REDRAW_ALL };
+static int redraw_level;
+
+static void need(int level)
+{
+    if (level > redraw_level) redraw_level = level;
+}
+
 static void handle(struct event *e)
 {
     int id;
-    if (popup_event(e))
-        return;
+    if (popup_event(e)) { need(REDRAW_ALL); return; }
     if (e->type == EV_RIGHT_DOWN) {
         if (e->b >= BAR_H && window_hit(e->a, e->b) < 0) {
             crystal_close();
             desktop_menu(e->a, e->b);
+            need(REDRAW_ALL);
         }
         return;
     }
-    if (crystal_event(e))
-        return;
+    if (crystal_event(e)) { need(REDRAW_ALL); return; }
+    if (e->type != EV_MOUSE_MOVE)
+        need(REDRAW_ALL);
 
     switch (e->type) {
     case EV_MOUSE_DOWN:
@@ -460,6 +473,7 @@ static void handle(struct event *e)
             if (w->y < BAR_H + TITLE_H) w->y = BAR_H + TITLE_H;
             if (w->x < -w->w + 80) w->x = -w->w + 80;
             if (w->x > scr_w - 80) w->x = scr_w - 80;
+            need(REDRAW_ALL);                   /* the desktop behind it */
         }
         break;
     case EV_KEY:
@@ -517,29 +531,44 @@ int main(int argc, char **argv)
         return 1;
     }
     clock_start();
-    wall_load_config();
-    input_open(scr_w, scr_h);
-    input_start_keyboard();
+    /* Paint something the instant the mode is set: until the first frame
+       reaches it, the card is showing whatever happened to be in its
+       memory, and everything below here takes a moment. */
     crystal_x = scr_w / 2;
-    music_chime();
+    wall_draw();
+    draw_present();
+
+    input_start_keyboard();
+    input_open(scr_w, scr_h);
+    wall_load_config();
     app_about();
+    draw_all();
+    draw_present();
+    music_chime();                              /* the sound chip is slow to wake */
 
     while (!quit_requested) {
-        int full = 0, light = 0;
-        while (next_event(&e)) { handle(&e); full = 1; }
-        if (crystal_busy()) full = 1;                   /* the gem is moving */
-        if (now_ms() - last_clock > 20000) { last_clock = now_ms(); full = 1; }
-        if (music_tick()) light = 1;                    /* only its own window */
-        if (mouse_x != last_x || mouse_y != last_y) light = 1;
+        int moved;
+        redraw_level = REDRAW_NONE;
+        while (next_event(&e)) handle(&e);
+        if (crystal_busy()) need(REDRAW_ALL);           /* the gem is moving */
+        if (now_ms() - last_clock > 20000) {
+            last_clock = now_ms();
+            need(REDRAW_ALL);
+        }
+        if (music_tick()) need(REDRAW_WINDOWS);         /* only its own window */
+        moved = (mouse_x != last_x || mouse_y != last_y);
 
-        if (full || light) {
-            /* Redrawing the whole desktop thirty times a second would push
-               five megabytes a frame at the screen; when only a window's
-               contents changed, repaint that window and nothing else. */
+        if (redraw_level != REDRAW_NONE || moved) {
             cursor_lift();
-            if (full) {
+            if (redraw_level == REDRAW_ALL && crystal_busy() && !drag_active) {
+                /* While the gem is breaking open, only the strip it moves
+                   through changes: repaint that and leave the rest be. */
+                clip_set(0, 0, scr_w, crystal_reach());
                 draw_all();
-            } else if (focused >= 0) {
+                clip_none();
+            } else if (redraw_level == REDRAW_ALL) {
+                draw_all();
+            } else if (redraw_level == REDRAW_WINDOWS) {
                 int i;
                 for (i = 0; i < window_count; i++)
                     if (windows[z_order[i]].draw)

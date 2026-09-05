@@ -65,6 +65,15 @@ static int progress(void)
     }
 }
 
+/* how far down the screen the gem and its menu can reach */
+int crystal_reach(void)
+{
+    int n = 0, h;
+    while (items[n]) n++;
+    h = n * ROW_H + 18;
+    return crystal_y + CRYSTAL_H + h + 40;
+}
+
 int crystal_busy(void)
 {
     return open_state == 1 || open_state == 3;

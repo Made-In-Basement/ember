@@ -129,8 +129,14 @@ void draw_present(void)
         uint8_t *dst = fb + (size_t)y * fb_pitch;
         int n = dmg_x1 - dmg_x0;
         if (fb_bpp == 32) {
+            /* A block move, not a loop: the card's memory is not cached,
+               and every write to it is slow enough that the difference
+               shows on the screen. */
             uint32_t *d = (uint32_t *)dst + dmg_x0;
-            for (x = 0; x < n; x++) d[x] = src[x];
+            int count = n;
+            __asm__ volatile("rep movsl"
+                             : "+D"(d), "+S"(src), "+c"(count)
+                             : : "memory");
         } else if (fb_bpp == 24) {
             uint8_t *d = dst + dmg_x0 * 3;
             for (x = 0; x < n; x++) {
