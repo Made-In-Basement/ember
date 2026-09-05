@@ -216,6 +216,7 @@ def build_app(name, src_files, out_name, extra_inc=()):
 def build_gui():
     import subprocess as sp
     sp.check_call([sys.executable, os.path.join(ROOT, 'tools', 'check_escapes.py')])
+    sp.check_call([sys.executable, os.path.join(ROOT, 'tools', 'stamp.py')])
     sp.check_call([sys.executable, os.path.join(ROOT, 'tools', 'mkfont.py')])
     sp.check_call([sys.executable, os.path.join(ROOT, 'tools', 'mktables.py')])
     sp.check_call([sys.executable, os.path.join(ROOT, 'tools', 'mkicons.py')])

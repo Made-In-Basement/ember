@@ -165,10 +165,13 @@ void sys_puts(const char *s)
     }
 }
 
+/* The string goes through the path area of the bounce buffer, which is
+   128 bytes: anything longer runs into the reply area and then the call
+   block itself, and the call never comes back. */
 void sys_log(const char *s)
 {
     size_t n = strlen(s);
-    if (n > 200) n = 200;
+    if (n > 120) n = 120;
     memcpy(nx_bounce + PATH_OFF, s, n);
     nx_bounce[PATH_OFF + n] = 0;
     rc_init(0xF2, 0, 0x21);

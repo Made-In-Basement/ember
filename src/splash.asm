@@ -13,7 +13,8 @@ SPL_CHUNK       equ 2048                        ; runs read this many bytes at a
 SPL_HOLD_TICKS  equ 55                          ; about three seconds
 SPL_MAX_W       equ 1920
 spl_row         equ nx_rm_stack                 ; idle unless a 32-bit program runs
-spl_out         equ nx_rm_stack + 2048          ; the widened copy of it
+spl_out         equ nx_rm_stack + 2048          ; a piece of the widened row
+SPL_OUT_W       equ 2048                        ; how much of it fits
 
 cmd_splash:
         call    next_arg
@@ -215,12 +216,21 @@ spl_emit_row:
         inc     ax                              ; always at least one row
 .have_span:
         mov     [spl_dy1], ax
-        ; widen the row once
+        ; Widen the row a piece at a time: the buffer holds SPL_OUT_W
+        ; pixels and a screen can be wider than that.  BP is how far
+        ; across the screen the piece starts, EBX where it is in the source.
         push    ds
         pop     es
+        xor     ebx, ebx
+        xor     bp, bp
+.piece: mov     cx, [scr_w]
+        sub     cx, bp
+        jbe     .done                           ; the row is complete
+        cmp     cx, SPL_OUT_W
+        jbe     .sized
+        mov     cx, SPL_OUT_W
+.sized: push    cx
         mov     di, spl_out
-        mov     cx, [scr_w]
-        xor     ebx, ebx                        ; where we are in the source
 .widen: mov     eax, ebx
         shr     eax, 16                         ; the whole part of it
         mov     si, spl_row
@@ -229,20 +239,22 @@ spl_emit_row:
         stosb
         add     ebx, [spl_xstep]
         loop    .widen
-        ; and lay it down
+        pop     cx
+        ; and lay the piece down on every screen row it covers
+        push    bx
         mov     bx, [spl_dy0]
 .rows:  cmp     bx, [spl_dy1]
-        jae     .done
+        jae     .laid
         cmp     bx, [scr_h]
-        jae     .done
-        push    bx
-        xor     ax, ax
-        mov     cx, [scr_w]
+        jae     .laid
+        mov     ax, bp
         mov     si, spl_out
         call    gfx_blit_row
-        pop     bx
         inc     bx
         jmp     .rows
+.laid:  pop     bx
+        add     bp, cx
+        jmp     .piece
 .done:  pop     ds
         pop     es
         popa

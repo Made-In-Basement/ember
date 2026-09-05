@@ -223,8 +223,6 @@ try_wide_mode:
         mov     bx, [vbe_info+20]               ; height
         or      bx, bx
         jz      .skip
-        cmp     ax, 1920
-        ja      .skip
         cmp     ax, 1024
         jb      .skip                           ; too small to be worth it
         ; the shape: width * 100 / height, wanted between 155 and 185
@@ -241,11 +239,8 @@ try_wide_mode:
         cmp     cx, 185
         ja      .skip_pop
         pop     cx
-        ; keep it if it is the biggest so far
+        ; keep it if it is the widest so far (an area would not fit 16 bits)
         mov     ax, [vbe_info+18]
-        push    dx
-        mul     word [vbe_info+20]
-        pop     dx
         cmp     ax, [wide_area]
         jbe     .skip
         mov     [wide_area], ax

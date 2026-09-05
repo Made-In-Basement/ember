@@ -418,6 +418,11 @@ def make_mbr(code, start, sectors, fat12):
 
 
 # --------------------------------------------------------------------------- #
+def write_build_stamp():
+    """So a running system can say which build it is: see tools/stamp.py."""
+    subprocess.check_call([sys.executable, str(ROOT / "tools" / "stamp.py")])
+
+
 def main():
     ap = argparse.ArgumentParser(description="Build the Ember disk image")
     ap.add_argument("--size", type=float, default=0, help="USB image size in MB (default 32)")
@@ -430,6 +435,7 @@ def main():
 
     BUILD.mkdir(exist_ok=True)
     nasm_exe = find_nasm()
+    write_build_stamp()
 
     print("Assembling:")
     boot = assemble(nasm_exe, SRC / "boot.asm", BUILD / "boot.bin")

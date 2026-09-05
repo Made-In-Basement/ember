@@ -551,6 +551,7 @@ nx_exit:
         call    kb_flush
         mov     ss, [nx_ss]
         mov     sp, [nx_sp]
+        call    log_flush                       ; what the program logged
         cmp     byte [nx_ret_type], 0
         je      .to_shell
         ; another program started it: clean up and return into its INT 21h

@@ -1620,7 +1620,7 @@ msg_pause:          db "Press any key to continue . . . ", 0
 msg_rebooting:      db "Rebooting...", 13, 10, 0
 msg_shutdown:       db 13, 10, 10, "          Ember is shutting down...", 13, 10, 0
 msg_safe_off:       db 13, 10, 10, "          It is now safe to turn off your computer.", 13, 10, 0
-msg_version:        db 13, 10, "Ember Version ", VERSION, 13, 10, 0
+msg_version:        db 13, 10, "Ember Version ", VERSION, " (", BUILD_STAMP, ")", 13, 10, 0
 msg_help:
         db 13, 10
         db "Ember commands:", 13, 10

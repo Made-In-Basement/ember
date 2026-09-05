@@ -4,6 +4,13 @@
  * IRQ12 in three-byte packets, the keyboard on IRQ1 as scancodes.  Each
  * handler does the least it can and drops an event in a queue, so nothing
  * slow ever runs with interrupts disabled.
+ *
+ * On a laptop the "PS/2 mouse" is usually a USB one that the firmware is
+ * impersonating from system management mode, and that impersonation is
+ * imperfect: it may not flag its bytes as the mouse's, may answer commands
+ * late or not at all, and traps every port access, which costs time.  So
+ * this driver asks the device as little as possible, reads one byte per
+ * interrupt, and keeps a record of what it saw for the log.
  */
 #include <nanolibc.h>
 #include "nano.h"
@@ -37,28 +44,64 @@ int next_event(struct event *e)
     return 1;
 }
 
+/* ---------------------------------------------------------------- a record */
+/* The first bytes to arrive, with where they came from, so that a mouse
+   that misbehaves on a machine we cannot see can still be understood. */
+#define TRACE_N 96
+static struct { uint8_t status, byte, irq; unsigned ms; } trace[TRACE_N];
+static int trace_n;
+static unsigned n_irq12, n_irq1_mouse, n_packets, n_dropped, n_resync;
+static char probe_note[120];
+
+static void note(const char *s)
+{
+    size_t have = strlen(probe_note);
+    if (have + strlen(s) + 1 < sizeof probe_note) {
+        if (have) probe_note[have++] = ' ';
+        strcpy(probe_note + have, s);
+    }
+}
+
 /* ---------------------------------------------------------------- mouse */
 static uint8_t packet[3];
 static int packet_n;
-static void mouse_irq(void);        /* the mouse's own interrupt */
+static unsigned packet_ms;                  /* when the packet started */
+static void mouse_irq(void);                /* the mouse's own interrupt */
 
 static void mouse_byte(uint8_t b)
 {
     int dx, dy, buttons;
+    unsigned now = now_ms();
 
-    if (packet_n == 0 && !(b & 0x08))
-        return;                                 /* out of step: wait for a start */
+    /* A packet arrives all at once; a long pause means the last one was
+       cut short, and this byte starts a new one.  Without this, one lost
+       byte would leave every later packet read one byte out of step. */
+    if (packet_n && now - packet_ms > 50) {
+        packet_n = 0;
+        n_resync++;
+    }
+    if (packet_n == 0) {
+        /* The first byte always has bit 3 set and, short of the mouse
+           being flung, bits 6 and 7 clear.  That also rejects FAh and AAh,
+           a late acknowledgement or self-test report, which would
+           otherwise be read as a click. */
+        if ((b & 0xC8) != 0x08) {
+            n_dropped++;
+            return;
+        }
+        packet_ms = now;
+    }
     packet[packet_n++] = b;
     if (packet_n < 3)
         return;
     packet_n = 0;
+    n_packets++;
 
     buttons = packet[0] & 0x07;
     dx = packet[1];
     dy = packet[2];
     if (packet[0] & 0x10) dx |= ~0xFF;          /* the sign lives in byte 0 */
     if (packet[0] & 0x20) dy |= ~0xFF;
-    if (packet[0] & 0xC0) return;               /* overflow: the packet is junk */
 
     /* A gentle acceleration: a slow movement stays precise, a quick one
        crosses the screen without a second push. */
@@ -97,19 +140,7 @@ static void kbd_wait_out(void)
     while (n-- && !(inb(0x64) & 0x01)) ;
 }
 
-static void aux_write(uint8_t v)
-{
-    kbd_wait_in();
-    outb(0x64, 0xD4);                           /* the next byte is for the mouse */
-    kbd_wait_in();
-    outb(0x60, v);
-    kbd_wait_out();
-    inb(0x60);                                  /* its acknowledgement */
-}
-
-/* Send a command to the mouse and wait for its acknowledgement.  Returns 0
-   if the device answered, which is how we tell there is one at all. */
-/* Wait for the controller to have something to say, but not for long: on
+/* Wait for the controller to have something to say, but not forever: on
    a machine with no PS/2 mouse nothing ever answers, and every millisecond
    spent here is a millisecond of blank screen at start-up. */
 static int aux_wait(unsigned ms)
@@ -120,19 +151,22 @@ static int aux_wait(unsigned ms)
     return -1;
 }
 
-static int aux_command(uint8_t v)
+/* Send a command to the mouse and wait for its acknowledgement.  Returns 0
+   if the device answered, which is how we tell there is one at all.  The
+   wait is generous because an impersonated mouse answers slowly. */
+static int aux_command(uint8_t v, unsigned ms)
 {
     kbd_wait_in();
     outb(0x64, 0xD4);                           /* the next byte is for the mouse */
     kbd_wait_in();
     outb(0x60, v);
-    if (aux_wait(40) != 0) return -1;
+    if (aux_wait(ms) != 0) return -1;
     return inb(0x60) == 0xFA ? 0 : -1;
 }
 
-static int aux_read(uint8_t *out)
+static int aux_read(uint8_t *out, unsigned ms)
 {
-    if (aux_wait(300) != 0) return -1;
+    if (aux_wait(ms) != 0) return -1;
     *out = inb(0x60);
     return 0;
 }
@@ -158,7 +192,7 @@ static int bios_assist(void)
     r.bx = 0x0300;
     r.intno = 0x15;
     sys_bios(&r);
-    if (r.flags & 1) return -1;
+    if (r.flags & 1) { note("bios-init-refused"); return -1; }
 
     memset(&r, 0, sizeof r);
     r.ax = 0xC207;                              /* the handler it should call */
@@ -166,67 +200,125 @@ static int bios_assist(void)
     r.bx = STUB_OFF;
     r.intno = 0x15;
     sys_bios(&r);
-    if (r.flags & 1) return -1;
+    if (r.flags & 1) { note("bios-handler-refused"); return -1; }
 
     memset(&r, 0, sizeof r);
     r.ax = 0xC200;                              /* and switch it on */
     r.bx = 0x0100;
     r.intno = 0x15;
     sys_bios(&r);
-    if (r.flags & 1) return -1;
+    if (r.flags & 1) { note("bios-enable-refused"); return -1; }
+    note("bios-enabled");
     return 0;
 }
 
 int input_open(int width, int height)
 {
-    uint8_t status, b;
+    uint8_t status, b, mask;
+    int tries;
+    unsigned t0 = now_ms();
     mouse_max_x = width - 1;
     mouse_max_y = height - 1;
     mouse_x = width / 2;
     mouse_y = height / 2;
     packet_n = 0;
+    probe_note[0] = 0;
 
-    aux_flush();
+    /* The key that started us is still coming up; let its release pass
+       through the keyboard's interrupt rather than land in our probe. */
+    while (now_ms() - t0 < 150) ;
+
+    /* The mouse's replies raise IRQ12, and until our handler is in place
+       the kernel's stub just discards whatever raised it.  So the
+       interrupt is held back while we ask, and let go once we listen. */
+    mask = inb(0xA1);
+    outb(0xA1, mask | 0x10);
+
     kbd_wait_in();
     outb(0x64, 0xA8);                           /* switch the mouse port on */
-    kbd_wait_in();
-    outb(0x64, 0x20);                           /* read the controller's setup */
-    kbd_wait_out();
-    status = inb(0x60);
-    status |= 0x02;                             /* let the mouse interrupt */
-    status &= (uint8_t)~0x20;                   /* and stop ignoring its clock */
-    kbd_wait_in();
-    outb(0x64, 0x60);
-    kbd_wait_in();
-    outb(0x60, status);
+
+    /* Read the controller's command byte.  A key going up meanwhile leaves
+       its scancode in the same buffer, and written back as the setting
+       that switches the keyboard off; so nothing else may read the port
+       while we ask, and a byte with bit 7 set is a scancode, not a
+       setting.  Without a believable answer the setting is left alone. */
+    status = 0;
+    for (tries = 0; tries < 4 && !status; tries++) {
+        __asm__ volatile("cli");
+        aux_flush();
+        kbd_wait_in();
+        outb(0x64, 0x20);
+        kbd_wait_out();
+        if (inb(0x64) & 0x01) {
+            b = inb(0x60);
+            if (!(b & 0x80)) status = b;
+        }
+        __asm__ volatile("sti");
+    }
+    if (status) {
+        status |= 0x02;                         /* let the mouse interrupt */
+        status &= (uint8_t)~0x20;               /* and stop ignoring its clock */
+        kbd_wait_in();
+        outb(0x64, 0x60);
+        kbd_wait_in();
+        outb(0x60, status);
+    } else {
+        note("no-command-byte");
+    }
     aux_flush();
 
     /* Is there really a mouse on that port?  A reset is answered by an
-       acknowledgement, then AAh when it has tested itself. */
+       acknowledgement, then AAh when it has tested itself.  Nothing else
+       is asked of it: the defaults are fine, and every extra command is
+       another chance for a late answer to be mistaken for movement. */
     mouse_via_bios = 0;
-    if (aux_command(0xFF) == 0 && aux_read(&b) == 0 && b == 0xAA) {
-        aux_read(&b);                           /* its identity, if it offers one */
-        aux_command(0xF6);                      /* sensible defaults */
-        aux_command(0xE8); aux_command(0x03);   /* the finest resolution */
-        aux_command(0xF3); aux_command(0x64);   /* a hundred reports a second */
-        aux_command(0xF4);                      /* start reporting */
-        mouse_present = 1;
-    } else if (bios_assist() == 0) {
-        mouse_via_bios = 1;                     /* a USB mouse, through the BIOS */
-        mouse_present = 1;
+    if (aux_command(0xFF, 250) != 0) {
+        note("no-ack-to-reset");
+    } else if (aux_read(&b, 1000) != 0 || b != 0xAA) {
+        note("no-self-test");
     } else {
-        mouse_present = 0;
+        note("reset-ok");
+        if (aux_read(&b, 300) == 0) note("has-id");
+        if (aux_command(0xF6, 250) != 0) note("no-ack-defaults");
+        if (aux_command(0xF4, 250) != 0) note("no-ack-enable");
+        mouse_present = 1;
     }
+    if (!mouse_present) {
+        if (bios_assist() == 0) {
+            mouse_via_bios = 1;                 /* a USB mouse, through the BIOS */
+            mouse_present = 1;
+        }
+    }
+    sys_logf("mouse: %s in %u ms, controller byte %02X",
+             probe_note, now_ms() - t0, status);
 
+    aux_flush();                                /* anything said meanwhile */
     packet_n = 0;
     sys_set_mouse_handler(mouse_irq);
+    outb(0xA1, mask & (uint8_t)~0x10);
     return mouse_present ? 0 : -1;
 }
 
+/* What was seen, for the log: the counts, then the first bytes with their
+   status and which interrupt brought them. */
 void input_close(void)
 {
+    char line[200];
+    int i, n = 0;
     sys_set_mouse_handler(0);
     sys_set_irq_handlers(0, 0);
+    sys_logf("mouse: %u on irq12, %u on irq1 flagged aux, %u packets, "
+             "%u dropped out of step, %u resyncs after a pause",
+             n_irq12, n_irq1_mouse, n_packets, n_dropped, n_resync);
+    for (i = 0; i < trace_n; i++) {
+        n += snprintf(line + n, sizeof line - n, "%s%u/%02X:%02X",
+                      (i % 4) ? " " : "", trace[i].irq, trace[i].status,
+                      trace[i].byte);
+        if (i % 4 == 3 || i == trace_n - 1) {
+            sys_logf("mouse: at +%ums %s", trace[i - (i % 4)].ms, line);
+            n = 0;
+        }
+    }
 }
 
 /* ---------------------------------------------------------------- keyboard */
@@ -262,29 +354,49 @@ static void key_byte(uint8_t sc)
     e0 = 0;
 }
 
-/* The keyboard and the mouse share one controller and one data port, and
-   bit 5 of the status normally says which of them a byte came from.  But a
-   USB mouse that the firmware is pretending is a PS/2 one does not always
-   set that bit, so on the mouse's own interrupt the byte is taken as the
-   mouse's regardless: nothing else is expected there. */
-static void drain_8042(int from_mouse_irq)
+static void record(uint8_t status, uint8_t b, int irq)
 {
-    int guard = 32;
-    while (guard--) {
-        uint8_t status = inb(0x64);
-        uint8_t b;
-        if (!(status & 0x01))
-            break;                              /* nothing waiting */
-        b = inb(0x60);
-        if ((status & 0x20) || (from_mouse_irq && mouse_via_bios))
-            mouse_byte(b);
-        else
-            key_byte(b);
+    if (trace_n < TRACE_N) {
+        trace[trace_n].status = status;
+        trace[trace_n].byte = b;
+        trace[trace_n].irq = (uint8_t)irq;
+        trace[trace_n].ms = now_ms();
+        trace_n++;
     }
 }
 
-static void mouse_irq(void)    { drain_8042(1); }
-static void keyboard_irq(void) { drain_8042(0); }
+/* One byte per interrupt, like the driver that worked before this one.
+   The keyboard and the mouse share the data port, and bit 5 of the status
+   normally says which of them a byte came from; but on the mouse's own
+   interrupt nothing else is expected, so the byte is the mouse's whether
+   the firmware flags it or not. */
+static void mouse_irq(void)
+{
+    uint8_t status = inb(0x64);
+    uint8_t b;
+    if (!(status & 0x01))
+        return;                                 /* nothing there after all */
+    b = inb(0x60);
+    n_irq12++;
+    record(status, b, 12);
+    mouse_byte(b);
+}
+
+static void keyboard_irq(void)
+{
+    uint8_t status = inb(0x64);
+    uint8_t b;
+    if (!(status & 0x01))
+        return;
+    b = inb(0x60);
+    if (status & 0x20) {
+        n_irq1_mouse++;
+        record(status, b, 1);
+        mouse_byte(b);
+    } else {
+        key_byte(b);
+    }
+}
 
 void input_start_keyboard(void)
 {

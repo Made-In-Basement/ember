@@ -16,6 +16,7 @@
 [ORG 0x0000]
 
 %define VERSION "1.2"
+%include "../build/version.inc"
 KERNEL_SEG      equ 0x0800
 BATCH_MAX       equ 2047
 
@@ -121,7 +122,7 @@ drive_letter:   db 'A'
 drive_number:   db 0
 screen_attr:    db 0x07
 msg_banner:
-        db "Ember Version ", VERSION, 13, 10
+        db "Ember Version ", VERSION, " (", BUILD_STAMP, ")", 13, 10
         db "A DOS-like operating system written from scratch in x86 assembly.", 13, 10
         db "Type HELP for a list of commands, or EMBER for the desktop.", 13, 10
         db 13, 10, 0

@@ -9,6 +9,7 @@
 #include "draw.h"
 #include "input.h"
 #include "shell.h"
+#include "version.h"
 
 #define PANEL       0x17120C
 #define PANEL_HI    0x241C12
@@ -37,7 +38,7 @@ static void about_draw(struct window *w)
     int y = w->y + 18, i;
     text(F_TITLE, w->x + 22, y, "Ember", AMBER_HOT);
     y += text_height(F_TITLE) + 2;
-    text(F_SMALL, w->x + 22, y, "version 1.2", TEXT_DIM);
+    text(F_SMALL, w->x + 22, y, "version 1.2, " BUILD_STAMP, TEXT_DIM);
     y += text_height(F_SMALL) + 14;
     fill(w->x + 22, y, w->w - 44, 1, EDGE);
     y += 14;

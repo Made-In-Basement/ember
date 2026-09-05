@@ -1470,7 +1470,9 @@ fF2:    push    es
         jmp     .next
 .end:   pop     es
         call    log_crlf
-        call    log_flush
+        ; The file itself is written when the program ends (gui.asm), not
+        ; here: rewriting it for every line is slow, and a desktop that
+        ; logs its whole mouse trace on the way out never got out.
         mov     R_AX, 0
         ret
 
