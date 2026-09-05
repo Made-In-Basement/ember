@@ -40,7 +40,7 @@ int next_event(struct event *e)
 /* ---------------------------------------------------------------- mouse */
 static uint8_t packet[3];
 static int packet_n;
-static void drain_8042(void);       /* both devices arrive through this */
+static void mouse_irq(void);        /* the mouse's own interrupt */
 
 static void mouse_byte(uint8_t b)
 {
@@ -219,7 +219,7 @@ int input_open(int width, int height)
     }
 
     packet_n = 0;
-    sys_set_mouse_handler(drain_8042);
+    sys_set_mouse_handler(mouse_irq);
     return mouse_present ? 0 : -1;
 }
 
@@ -262,11 +262,12 @@ static void key_byte(uint8_t sc)
     e0 = 0;
 }
 
-/* The keyboard and the mouse are the same controller and the same data
-   port.  Bit 5 of the status says a byte came from the mouse, and a
-   handler that does not look will happily eat the other device's bytes.
-   Both interrupts come here, so it does not matter which one fired. */
-static void drain_8042(void)
+/* The keyboard and the mouse share one controller and one data port, and
+   bit 5 of the status normally says which of them a byte came from.  But a
+   USB mouse that the firmware is pretending is a PS/2 one does not always
+   set that bit, so on the mouse's own interrupt the byte is taken as the
+   mouse's regardless: nothing else is expected there. */
+static void drain_8042(int from_mouse_irq)
 {
     int guard = 32;
     while (guard--) {
@@ -275,12 +276,17 @@ static void drain_8042(void)
         if (!(status & 0x01))
             break;                              /* nothing waiting */
         b = inb(0x60);
-        if (status & 0x20) mouse_byte(b);
-        else key_byte(b);
+        if ((status & 0x20) || (from_mouse_irq && mouse_via_bios))
+            mouse_byte(b);
+        else
+            key_byte(b);
     }
 }
 
+static void mouse_irq(void)    { drain_8042(1); }
+static void keyboard_irq(void) { drain_8042(0); }
+
 void input_start_keyboard(void)
 {
-    sys_set_irq_handlers(0, drain_8042);
+    sys_set_irq_handlers(0, keyboard_irq);
 }

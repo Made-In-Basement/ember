@@ -550,6 +550,10 @@ int main(int argc, char **argv)
             last_x = mouse_x;
             last_y = mouse_y;
             draw_present();
+            /* A full repaint at this size takes long enough that the sound
+               chip can run dry while it happens; top the ring up again the
+               moment the frame is out. */
+            if (music_active()) music_tick();
         } else if (!music_active()) {
             /* Nothing to draw and nothing to feed: wait for the next
                interrupt rather than spinning.  With sound playing there is

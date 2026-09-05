@@ -11,8 +11,9 @@
 SPL_SCRATCH_PARAS equ 0x100                     ; 4 KB from the arena
 SPL_CHUNK       equ 2048                        ; runs read this many bytes at a time
 SPL_HOLD_TICKS  equ 55                          ; about three seconds
-SPL_MAX_W       equ 800
+SPL_MAX_W       equ 1920
 spl_row         equ nx_rm_stack                 ; idle unless a 32-bit program runs
+spl_out         equ nx_rm_stack + 2048          ; the widened copy of it
 
 cmd_splash:
         call    next_arg
@@ -51,16 +52,19 @@ cmd_splash:
         mov     ax, [es:6]
         mov     [spl_h], ax
         ; ---- the screen ----
-        mov     al, 3                           ; 800x600
+        mov     al, 5                           ; the widest mode on offer
         call    gfx_init
         cmp     byte [gfx_ok], 0
         je      .no_gfx
-        mov     ax, [scr_w]
-        cmp     ax, [spl_w]
-        jb      .wrong_size
-        mov     ax, [scr_h]
-        cmp     ax, [spl_h]
-        jb      .wrong_size
+        ; How many source pixels to step per screen pixel, as 16.16.  This
+        ; needs 32 bits: a picture wider than the screen steps by more than
+        ; one, which will not fit in a 16-bit fraction.
+        movzx   eax, word [spl_w]
+        shl     eax, 16
+        xor     edx, edx
+        movzx   ecx, word [scr_w]
+        div     ecx
+        mov     [spl_xstep], eax
         call    gfx_set_palette                 ; finds out the DAC width
         call    spl_palette
         call    spl_draw
@@ -175,13 +179,10 @@ spl_draw:
         mov     ax, [spl_x]
         cmp     ax, [spl_w]
         jb      .more
-        ; ---- a whole row: onto the screen ----
+        ; ---- a whole source row: stretch it and put it on every screen
+        ;      row it covers, so the picture fills the mode it got ----
         push    si
-        xor     ax, ax
-        mov     bx, [spl_y]
-        mov     cx, [spl_w]
-        mov     si, spl_row
-        call    gfx_blit_row
+        call    spl_emit_row
         pop     si
         mov     word [spl_x], 0
         inc     word [spl_y]
@@ -192,6 +193,59 @@ spl_draw:
         jnz     .fill
         jmp     .run
 .done:  popa
+        ret
+
+; spl_emit_row: source row [spl_y] is complete in spl_row.  Widen it to the
+;   screen and draw it on every screen row it covers.
+spl_emit_row:
+        pusha
+        push    es                              ; the caller reads its runs
+        push    ds                              ;  through ES: leave it alone
+        ; which screen rows does this source row cover?
+        mov     ax, [spl_y]
+        mul     word [scr_h]
+        div     word [spl_h]
+        mov     [spl_dy0], ax
+        mov     ax, [spl_y]
+        inc     ax
+        mul     word [scr_h]
+        div     word [spl_h]
+        cmp     ax, [spl_dy0]
+        jne     .have_span
+        inc     ax                              ; always at least one row
+.have_span:
+        mov     [spl_dy1], ax
+        ; widen the row once
+        push    ds
+        pop     es
+        mov     di, spl_out
+        mov     cx, [scr_w]
+        xor     ebx, ebx                        ; where we are in the source
+.widen: mov     eax, ebx
+        shr     eax, 16                         ; the whole part of it
+        mov     si, spl_row
+        add     si, ax
+        mov     al, [si]
+        stosb
+        add     ebx, [spl_xstep]
+        loop    .widen
+        ; and lay it down
+        mov     bx, [spl_dy0]
+.rows:  cmp     bx, [spl_dy1]
+        jae     .done
+        cmp     bx, [scr_h]
+        jae     .done
+        push    bx
+        xor     ax, ax
+        mov     cx, [scr_w]
+        mov     si, spl_out
+        call    gfx_blit_row
+        pop     bx
+        inc     bx
+        jmp     .rows
+.done:  pop     ds
+        pop     es
+        popa
         ret
 
 ; spl_refill: the next chunk of runs into ES:0.  CF=1 when the file is used up

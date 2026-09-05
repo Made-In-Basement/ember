@@ -42,6 +42,15 @@ gfx_init:
         pusha
         push    es
         mov     byte [gfx_ok], 0
+        cmp     al, 5                           ; 5 = the widest mode offered
+        jne     .not_wide
+        call    try_wide_mode
+        jnc     .mode_set
+        mov     cx, 0x0103                      ; nothing wide: 800x600
+        call    try_vbe_mode
+        jnc     .mode_set
+        jmp     .try_640
+.not_wide:
         cmp     al, 1
         je      .low_res
         cmp     al, 4
@@ -135,6 +144,128 @@ try_vbe_mode:
         clc
         ret
 .fail:  pop     es
+        popa
+        stc
+        ret
+
+; -----------------------------------------------------------------------------
+; try_wide_mode: take the widest mode the card offers whose shape matches a
+;   widescreen panel.  A 4:3 mode on such a panel is stretched to fill it,
+;   which is what made the splash look wrong.  CF=0 with the mode set.
+;
+;   The card's list of modes usually lives inside the block it just filled
+;   in, so the list is copied out before any mode is asked about: the reply
+;   would otherwise land on top of the list being walked.
+; -----------------------------------------------------------------------------
+WIDE_MAX        equ 96
+
+try_wide_mode:
+        pusha
+        push    es
+        push    ds
+        pop     es
+        mov     di, vbe_info
+        mov     dword [di], "VBE2"
+        mov     ax, 0x4F00
+        int     0x10
+        cmp     ax, 0x004F
+        jne     .none
+        cmp     dword [vbe_info], "VESA"
+        jne     .none
+
+        ; ---- copy the list of mode numbers somewhere safe ----
+        mov     ax, [vbe_info+16]               ; its segment
+        mov     fs, ax
+        mov     si, [vbe_info+14]               ; and offset
+        mov     di, wide_modes
+        xor     cx, cx
+.copy:  mov     ax, [fs:si]
+        cmp     ax, 0xFFFF
+        je      .copied
+        mov     [di], ax
+        add     si, 2
+        add     di, 2
+        inc     cx
+        cmp     cx, WIDE_MAX
+        jb      .copy
+.copied:
+        mov     [wide_count], cx
+        or      cx, cx
+        jnz     .have_list
+        jmp     .none
+.have_list:
+
+        ; ---- look at each in turn, keeping the largest widescreen one ----
+        mov     word [wide_best], 0
+        mov     word [wide_area], 0
+        xor     bp, bp
+.next:  cmp     bp, [wide_count]
+        jae     .chose
+        mov     si, bp
+        shl     si, 1
+        mov     cx, [wide_modes+si]
+        push    bp
+        push    cx
+        mov     ax, 0x4F01
+        mov     di, vbe_info
+        int     0x10
+        pop     cx
+        pop     bp
+        cmp     ax, 0x004F
+        jne     .skip
+        test    byte [vbe_info], 0x01           ; is it supported?
+        jz      .skip
+        cmp     byte [vbe_info+25], 8           ; 256 colours
+        jne     .skip
+        cmp     word [vbe_info+8], VIDEO_SEG    ; reachable through the window
+        jne     .skip
+        mov     ax, [vbe_info+18]               ; width
+        mov     bx, [vbe_info+20]               ; height
+        or      bx, bx
+        jz      .skip
+        cmp     ax, 1920
+        ja      .skip
+        cmp     ax, 1024
+        jb      .skip                           ; too small to be worth it
+        ; the shape: width * 100 / height, wanted between 155 and 185
+        push    cx
+        push    dx
+        xor     dx, dx
+        mov     cx, 100
+        mul     cx
+        div     bx
+        mov     cx, ax                          ; CX = the ratio
+        pop     dx
+        cmp     cx, 155
+        jb      .skip_pop
+        cmp     cx, 185
+        ja      .skip_pop
+        pop     cx
+        ; keep it if it is the biggest so far
+        mov     ax, [vbe_info+18]
+        push    dx
+        mul     word [vbe_info+20]
+        pop     dx
+        cmp     ax, [wide_area]
+        jbe     .skip
+        mov     [wide_area], ax
+        mov     [wide_best], cx
+        jmp     .skip
+.skip_pop:
+        pop     cx
+.skip:  inc     bp
+        jmp     .next
+.chose:
+        cmp     word [wide_best], 0
+        je      .none
+        mov     cx, [wide_best]
+        call    try_vbe_mode
+        jc      .none
+        pop     es
+        popa
+        clc
+        ret
+.none:  pop     es
         popa
         stc
         ret
@@ -735,6 +866,9 @@ scr_h:          dw 480
 scr_pitch:      dw 640
 dac_shift:      db 2
 bank_mult:      dw 1
+wide_best:      dw 0
+wide_area:      dw 0
+wide_count:     dw 0
 cur_bank:       dw 0xFFFF
 pen:            db 0
 bevel:          db 0
@@ -745,6 +879,7 @@ mouse_buttons:  db 0
 mouse_dx:       dw 0
 mouse_dy:       dw 0
 section .bss
-vbe_info:       resb 256
+vbe_info:       resb 512
+wide_modes:     resw WIDE_MAX
 char_row:       resb 8
 section .text

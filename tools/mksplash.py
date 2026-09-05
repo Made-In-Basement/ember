@@ -15,7 +15,7 @@ import sys
 
 from PIL import Image
 
-W, H = 800, 600
+W, H = 1280, 720          # 16:9, the shape of the panels this runs on
 BLACK_FLOOR = 32
 
 

@@ -20,9 +20,18 @@ PCI_ADDR        equ 0x0CF8
 PCI_DATA        equ 0x0CFC
 
 start:
+        ; DOS hands a .COM program whatever was in that memory before, so
+        ; anything assumed to start at zero has to be made zero.  Getting
+        ; this wrong wrote a file of whatever the machine happened to be
+        ; holding, which is worse than writing nothing.
+        mov     di, bss_start
+        mov     cx, bss_end - bss_start
+        xor     al, al
+        cld
+        rep     stosb
+
         mov     si, msg_head
         call    puts
-        mov     word [lines], 0
 
         xor     bx, bx                          ; BX = bus:device:function
 .next:
@@ -300,8 +309,10 @@ msg_done:   db "-------------------------------------------------", 13, 10
 LOG_MAX     equ 8192
 
 section .bss
+bss_start:
 dev_id:     resd 1
 class_dw:   resd 1
 lines:      resw 1
 log_len:    resw 1
 log_buf:    resb LOG_MAX
+bss_end:

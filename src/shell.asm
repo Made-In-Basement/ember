@@ -1646,6 +1646,10 @@ spl_x:          resw 1
 spl_y:          resw 1
 spl_left:       resw 1
 spl_start:      resd 1
+spl_top:        resw 1
+spl_xstep:      resd 1
+spl_dy0:        resw 1
+spl_dy1:        resw 1
 spl_colour:     resb 1
 spl_has_wav:    resb 1
 tab_line:       resw 1                          ; Tab completion's state
