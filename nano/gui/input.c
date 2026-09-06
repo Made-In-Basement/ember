@@ -126,6 +126,12 @@ static void mouse_byte(uint8_t b)
     input_inject_mouse(dx, -dy, buttons);       /* the mouse counts up, screens down */
 }
 
+/* A key from the keyboard on the screen: the same queue, the same shape */
+void input_inject_key(int scan, int ch)
+{
+    push(EV_KEY, scan, ch);
+}
+
 /* A position, from a touchscreen: the pointer goes there, and a finger on
    the glass is the left button. */
 void input_inject_absolute(int x, int y, int down)

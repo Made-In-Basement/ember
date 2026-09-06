@@ -76,6 +76,14 @@ void music_closed(int id);
 void app_text(void);
 void app_doom(void);
 
+/* the keyboard on the screen */
+extern int osk_visible;
+void osk_toggle(void);
+void osk_draw(void);
+int  osk_event(struct event *e);
+int  osk_tick(void);
+void osk_rect(int *x, int *y, int *w, int *h);
+
 /* where the time goes, counted by the main loop for the monitor */
 struct shell_stats {
     unsigned frames, loops;

@@ -14,6 +14,7 @@ extern int mouse_max_x, mouse_max_y;
 int  input_open(int width, int height, int passive);
 void input_inject_mouse(int dx, int dy, int buttons);   /* dy positive = down */
 void input_inject_absolute(int x, int y, int down);     /* a finger on a screen */
+void input_inject_key(int scan, int ch);                /* the keyboard on the screen */
 void input_start_keyboard(void);
 void input_close(void);
 int  next_event(struct event *e);

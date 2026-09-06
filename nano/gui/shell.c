@@ -326,6 +326,11 @@ static void draw_all(void)
     crystal_rect(&cx, &cy, &cw, &ch);
     if (clip_intersects(cx, cy, cw, ch))
         crystal_draw();
+    if (osk_visible) {
+        osk_rect(&cx, &cy, &cw, &ch);
+        if (clip_intersects(cx, cy, cw, ch))
+            osk_draw();
+    }
     popup_draw();
 }
 
@@ -339,9 +344,10 @@ void shell_run_menu(int item)
     case 3: app_calc(); break;
     case 4: app_doom(); break;
     case 5: app_monitor(); break;
-    case 6: app_help(); break;
-    case 7: app_about(); break;
-    case 8: quit_requested = 1; break;
+    case 6: osk_toggle(); break;                /* the caller repaints everything */
+    case 7: app_help(); break;
+    case 8: app_about(); break;
+    case 9: quit_requested = 1; break;
     default: break;
     }
 }
@@ -428,6 +434,16 @@ static void handle(struct event *e)
             need(REDRAW_ALL);
         }
         return;
+    }
+    if (osk_visible && (e->type == EV_MOUSE_MOVE || e->type == EV_MOUSE_DOWN ||
+                        e->type == EV_MOUSE_UP || e->type == EV_RIGHT_DOWN)) {
+        int handled = osk_event(e);
+        if (handled) {
+            int x, y, w, h;
+            osk_rect(&x, &y, &w, &h);
+            need_rect(x, y, w, h);
+            return;
+        }
     }
     if (crystal_event(e)) {
         if (e->type == EV_MOUSE_MOVE) need_crystal();   /* hover: the gem's region */
@@ -596,6 +612,11 @@ int main(int argc, char **argv)
         if (monitor_tick()) {
             int id = monitor_window();
             if (id >= 0) need_window(&windows[id], windows[id].x, windows[id].y);
+        }
+        if (osk_tick()) {
+            int x, y, w, h;
+            osk_rect(&x, &y, &w, &h);
+            need_rect(x, y, w, h);
         }
         moved = (mouse_x != last_x || mouse_y != last_y);
 
