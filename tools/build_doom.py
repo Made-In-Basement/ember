@@ -60,6 +60,29 @@ def prepare_sources():
           r'home = getenv\("HOME"\);\s*if \(!home\)\s*I_Error\("Please set \$HOME to your home directory"\);\s*sprintf\(basedefault, "%s/.doomrc", home\);',
           'strcpy(basedefault, "ndoom.cfg");', regex=True)
     patch(os.path.join(src, 'd_main.c'), 'doomwaddir = ".";', 'doomwaddir = "";')
+    # Which game the data is, decided by what is in it rather than by the
+    # file's name: "The Ultimate DOOM" as sold today is DOOM.WAD, which the
+    # original code took for the older registered game and then asked for a
+    # screen (HELP2) that only the older one has.
+    patch(os.path.join(src, 'd_main.c'),
+          '    W_InitMultipleFiles (wadfiles);\n',
+          '    W_InitMultipleFiles (wadfiles);\n'
+          '    if (W_CheckNumForName("MAP01") >= 0) gamemode = commercial;\n'
+          '    else if (W_CheckNumForName("E4M1") >= 0) gamemode = retail;\n'
+          '    else if (W_CheckNumForName("E2M1") >= 0) gamemode = registered;\n'
+          '    else gamemode = shareware;\n')
+    # and "-iwad FILE" to say which one, when several are in the folder
+    patch(os.path.join(src, 'd_main.c'),
+          '    strcpy(basedefault, "ndoom.cfg");\n#endif\n',
+          '    strcpy(basedefault, "ndoom.cfg");\n#endif\n'
+          '    {\n'
+          '        int p = M_CheckParm("-iwad");\n'
+          '        if (p && p < myargc - 1) {\n'
+          '            gamemode = registered;      /* settled by the lumps once loaded */\n'
+          '            D_AddFile(myargv[p + 1]);\n'
+          '            return;\n'
+          '        }\n'
+          '    }\n')
     patch(os.path.join(src, 'd_main.c'), '"%s/', '"%s', count=0)
     # file length without fstat
     patch(os.path.join(src, 'w_wad.c'),
