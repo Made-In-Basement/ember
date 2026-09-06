@@ -77,14 +77,6 @@ start:
         mov     si, msg_head
         call    puts
 
-        ; A20 must be open to reach anything above 1 MB; the kernel opened
-        ; it, but say so if not
-        in      al, 0x92
-        test    al, 0x02
-        jnz     .a20_ok
-        mov     si, msg_a20
-        call    puts
-.a20_ok:
         ; Prove the path to high memory works before blaming a controller:
         ; the HD Audio block's first register (from PCI.TXT its region is
         ; C131C000h) reads as a small non-zero capability word.
@@ -102,10 +94,18 @@ start:
         call    print_hex32
         call    crlf
 
+        call    chipset_dump
+        call    scan_blocks
+
         ; ---- the touchpad: host 0, address 2Ch, descriptor at 20h ----
         mov     si, msg_touchpad
         call    puts
-        mov     dword [cur_base], 0xFE103000
+        mov     eax, [found_i2c]                ; wherever the sweep found it
+        test    eax, eax
+        jnz     .tp_base
+        mov     eax, 0xFE103000
+.tp_base:
+        mov     [cur_base], eax
         mov     word [dev_addr], 0x2C
         mov     word [desc_reg], 0x0020
         call    probe_device
@@ -113,7 +113,12 @@ start:
         ; ---- the touchscreen: host 1, address 4Ah, descriptor at 0 ----
         mov     si, msg_touchscreen
         call    puts
-        mov     dword [cur_base], 0xFE105000
+        mov     eax, [found_i2c+4]
+        test    eax, eax
+        jnz     .ts_base
+        mov     eax, 0xFE105000
+.ts_base:
+        mov     [cur_base], eax
         mov     word [dev_addr], 0x4A
         mov     word [desc_reg], 0x0000
         call    probe_device
@@ -178,6 +183,146 @@ probe_device:
         mov     si, msg_no_answer
         call    puts
         call    print_abort
+        ret
+
+; ---------------------------------------------------------------- the chipset
+; chipset_dump: what the PCH says about these functions.  The LPC bridge
+;   (00:1F.0) holds the root complex base (RCBA) at config F0h; the
+;   function-disable registers live at RCBA+3418h and +3428h.  The Serial
+;   IO functions are device 21 (15h); their vendor words say whether they
+;   are visible at all.
+chipset_dump:
+        mov     si, msg_pci_sio
+        call    puts
+        xor     cx, cx                          ; function 0..7 of 00:15
+.fn:    mov     bx, 0x00A8                      ; bus 0, device 21, function CL
+        or      bl, cl
+        xor     al, al
+        call    pci_rd
+        call    print_hex32
+        mov     al, ' '
+        call    putc
+        inc     cx
+        cmp     cx, 8
+        jb      .fn
+        call    crlf
+        mov     si, msg_pci_lpc
+        call    puts
+        mov     bx, 0x00F8                      ; 00:1F.0
+        xor     al, al
+        call    pci_rd
+        call    print_hex32
+        mov     si, msg_rcba
+        call    puts
+        mov     bx, 0x00F8
+        mov     al, 0xF0
+        call    pci_rd
+        mov     [rcba], eax
+        call    print_hex32
+        call    crlf
+        cmp     eax, 0xFFFFFFFF                 ; no such bridge (the emulator)
+        je      .no_rcba
+        test    al, 1                           ; enabled?
+        jz      .no_rcba
+        and     dword [rcba], 0xFFFFC000
+        mov     eax, [rcba]
+        mov     [cur_base], eax
+        mov     si, msg_fd
+        call    puts
+        mov     bx, 0x3410                      ; GCS
+        call    ic_rd
+        call    print_hex32
+        mov     al, ' '
+        call    putc
+        mov     bx, 0x3418                      ; FD
+        call    ic_rd
+        call    print_hex32
+        mov     al, ' '
+        call    putc
+        mov     bx, 0x3428                      ; FD2
+        call    ic_rd
+        call    print_hex32
+        call    crlf
+.no_rcba:
+        ret
+
+; pci_rd: BX = bus:dev:fn (bus in BH, dev<<3|fn in BL), AL = register -> EAX
+pci_rd:
+        push    dx
+        push    ebx
+        push    ecx
+        movzx   ecx, al
+        and     ecx, 0xFC
+        movzx   eax, bx
+        movzx   ebx, bh
+        shl     ebx, 16
+        and     eax, 0xFF
+        shl     eax, 8
+        or      eax, ebx
+        or      eax, ecx
+        or      eax, 0x80000000
+        mov     dx, 0x0CF8
+        out     dx, eax
+        mov     dx, 0x0CFC
+        in      eax, dx
+        pop     ecx
+        pop     ebx
+        pop     dx
+        ret
+
+; scan_blocks: every 4 KB page of the chipset's memory window, looking for
+;   the I2C block's identity at +FCh and noting what else answers there.
+scan_blocks:
+        mov     si, msg_scan
+        call    puts
+        mov     dword [cur_base], 0xFE000000
+        mov     word [found_n], 0
+        mov     word [live_n], 0
+.page:  mov     bx, 0xFC
+        call    ic_rd
+        cmp     eax, DW_IDENT
+        jne     .not_i2c
+        mov     si, msg_found
+        call    puts
+        mov     eax, [cur_base]
+        call    print_hex32
+        call    crlf
+        mov     bx, [found_n]
+        cmp     bx, 4
+        jae     .not_i2c
+        shl     bx, 2
+        mov     [found_i2c+bx], eax
+        inc     word [found_n]
+.not_i2c:
+        xor     bx, bx
+        call    ic_rd
+        cmp     eax, 0xFFFFFFFF
+        je      .next
+        inc     word [live_n]
+        cmp     word [live_n], 24
+        ja      .next
+        mov     si, msg_live
+        call    puts
+        push    eax
+        mov     eax, [cur_base]
+        call    print_hex32
+        mov     al, ' '
+        call    putc
+        pop     eax
+        call    print_hex32
+        call    crlf
+.next:  add     dword [cur_base], 0x1000
+        cmp     dword [cur_base], 0xFF000000
+        jb      .page
+        mov     si, msg_scan_end
+        call    puts
+        mov     ax, [live_n]
+        call    print_dec
+        mov     si, msg_scan_end2
+        call    puts
+        mov     ax, [found_n]
+        call    print_dec
+        call    crlf
         ret
 
 ; ---------------------------------------------------------------- the host
@@ -839,7 +984,15 @@ msg_selftest:   db "High memory check: sound chip reads ", 0
 msg_selftest2:  db ", BIOS ROM reads ", 0
 msg_raw:        db "  registers 00-1C: ", 0
 msg_raw2:       db "  private 800-81C: ", 0
-msg_a20:        db "(A20 is closed: memory above 1 MB may not be reachable)", 13, 10, 0
+msg_pci_sio:    db "PCI 00:15.0-7 (Serial IO) vendor/device: ", 0
+msg_pci_lpc:    db "PCI 00:1F.0 (LPC): ", 0
+msg_rcba:       db "  RCBA ", 0
+msg_fd:         db "  GCS/FD/FD2: ", 0
+msg_scan:       db "Sweeping FE000000-FEFFFFFF for I2C blocks...", 13, 10, 0
+msg_found:      db "  I2C block at ", 0
+msg_live:       db "  something answers at ", 0
+msg_scan_end:   db "  pages answering: ", 0
+msg_scan_end2:  db ", I2C blocks: ", 0
 msg_touchpad:   db 13, 10, "Touchpad (Synaptics, host 0, address 2Ch)", 13, 10, 0
 msg_touchscreen: db 13, 10, "Touchscreen (Atmel, host 1, address 4Ah)", 13, 10, 0
 msg_host_at:    db "  host at ", 0
@@ -902,6 +1055,10 @@ reports:        resw 1
 empties:        resw 1
 errors:         resw 1
 unreal_ok:      resb 1
+rcba:           resd 1
+found_i2c:      resd 4
+found_n:        resw 1
+live_n:         resw 1
 wr_buf:         resb 8
 rd_buf:         resb 64
 log_len:        resw 1
