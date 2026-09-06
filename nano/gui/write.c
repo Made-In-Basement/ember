@@ -65,10 +65,23 @@ static int cursor, anchor = -1;         /* anchor >= 0: a selection from anchor 
 static int cur_face = F_NORMAL, cur_color;
 static int scroll_y;
 static int dragging, dirty;
-static char filename[64] = "\\NOTE.EMW";
+static char filename[128] = "\\NOTE.EMW";
 static int named;                       /* the file has a name of its own: Save need not ask */
-static int naming;                      /* 1 typing a name to open, 2 to save */
-static char name_buf[64];
+static int naming;                      /* the picker is up: 1 to open, 2 to save */
+static char name_buf[64];               /* the name being typed, without its folder */
+
+/* the file picker that Open and Save as lay over the page */
+#define PICK_MAX    256
+#define PICK_ROW    34
+#define PICK_HEAD   40
+#define PICK_FOOT   48
+struct pick_entry { char name[13], shown[40]; uint32_t size; int is_dir; };
+static struct pick_entry picks[PICK_MAX];
+static int npicks, pick_page, pick_hot = -1;
+static char pick_dir[80];               /* "" is the root; otherwise the folder, backslash first */
+static void pick_begin(int mode);
+static void pick_draw(int x, int y, int wd, int h);
+static int  pick_click(int ex, int ey, int x, int y, int wd, int h, int dbl);
 static struct cell *clip;
 static int nclip;
 static int win_id = -1;
@@ -483,7 +496,7 @@ static void write_draw(struct window *w)
         int ox, oy, ow, oh;
         clip_get(&ox, &oy, &ow, &oh);
         clip_set(px - 4, py - 2, pw + 8, view_h + 4);
-        for (i = 0; i < nlines; i++) {
+        for (i = 0; i < nlines && !naming; i++) {       /* the picker covers the page */
             struct line *L = &lines[i];
             int ly = py + L->y - scroll_y, k, x;
             if (ly + L->h < py - 2) continue;
@@ -521,13 +534,14 @@ static void write_draw(struct window *w)
         }
         clip_set(ox, oy, ow, oh);
     }
+    if (naming) pick_draw(px - 6, py - 4, pw + 12, view_h + 8);
 
     /* the status line: the file, or the name being typed */
     {
         int sy = w->y + w->h - STATUS_H;
         fill(w->x, sy, w->w, 1, EDGE);
         if (naming) {
-            snprintf(buf, sizeof buf, "%s as: %s_", naming == 1 ? "Open" : "Save", name_buf);
+            snprintf(buf, sizeof buf, "%s  C:%s\\%s", naming == 1 ? "Open" : "Save as", pick_dir, name_buf);
             text(F_SMALL, w->x + MARGIN, sy + 6, buf, AMBER_HOT);
         } else {
             snprintf(buf, sizeof buf, "%s%s   %s", filename, dirty ? " *" : "", status);
@@ -541,7 +555,7 @@ static void do_tool(int id, int sub)
 {
     switch (id) {
     case T_NEW:    doc_new(); strcpy(filename, "\\NOTE.EMW"); named = 0; status[0] = 0; break;
-    case T_OPEN:   naming = 1; strncpy(name_buf, filename, sizeof name_buf - 1); break;
+    case T_OPEN:   pick_begin(1); break;
     case T_SAVE:
         if (named) {                                /* straight back to where it came from */
             if (save_file(filename) == 0) strcpy(status, "saved");
@@ -549,7 +563,7 @@ static void do_tool(int id, int sub)
             break;
         }
         /* fall through: a new document needs a name */
-    case T_SAVEAS: naming = 2; strncpy(name_buf, filename, sizeof name_buf - 1); break;
+    case T_SAVEAS: pick_begin(2); break;
     case T_SMALL:  apply_face(F_SMALL); break;
     case T_NORMAL: apply_face(F_NORMAL); break;
     case T_BOLD:   apply_face(F_BOLD); break;
@@ -564,18 +578,210 @@ static void do_tool(int id, int sub)
     }
 }
 
+/* ------------------------------------------------------------ the picker */
+/* Open and Save as lay a picker over the page: the folder's subfolders
+ * and files in two columns of finger-sized rows, a page at a time, with
+ * the name along the bottom.  A folder opens on a click; a file opens on
+ * a click (Open) or lends its name (Save as); the name can also be typed. */
+static int is_text_name(const char *n)
+{
+    static const char *ext[] = { ".TXT", ".EMW", ".BAT", ".INI", ".CFG", ".LOG", ".MD",
+                                 ".C", ".H", ".ASM", ".PY", ".NFO", ".DOC", ".DIZ", 0 };
+    const char *d = strrchr(n, '.');
+    int i;
+    if (!d) return 1;                                   /* README, AUTOEXEC: text, most likely */
+    for (i = 0; ext[i]; i++) if (!strcmp(d, ext[i])) return 1;
+    return 0;
+}
+
+static void pick_scan(void)
+{
+    struct dos_find f;
+    char pat[96], lname[84];
+    int pass;
+    npicks = 0;
+    pick_page = 0;
+    pick_hot = -1;
+    for (pass = 0; pass < 2 && npicks < PICK_MAX; pass++) {     /* folders first, then files */
+        snprintf(pat, sizeof pat, "%s\\*.*", pick_dir);
+        if (sys_findfirst(pat, &f) != 0) continue;
+        do {
+            int is_dir = (f.attr & 0x10) != 0;
+            struct pick_entry *p;
+            if (f.name[0] == '.' || (f.attr & 0x06)) continue;  /* hidden or system */
+            if (is_dir != (pass == 0)) continue;
+            p = &picks[npicks++];
+            strncpy(p->name, f.name, 12);
+            p->name[12] = 0;
+            if (sys_long_name(lname, sizeof lname) <= 0) strcpy(lname, f.name);
+            strncpy(p->shown, lname, sizeof p->shown - 1);
+            p->shown[sizeof p->shown - 1] = 0;
+            p->size = f.size;
+            p->is_dir = is_dir;
+        } while (npicks < PICK_MAX && sys_findnext(&f) == 0);
+    }
+}
+
+static void pick_begin(int mode)
+{
+    const char *slash = strrchr(filename, '\\');
+    naming = mode;
+    if (slash) {
+        int n = (int)(slash - filename);
+        if (n > (int)sizeof pick_dir - 1) n = sizeof pick_dir - 1;
+        memcpy(pick_dir, filename, n);
+        pick_dir[n] = 0;
+        strncpy(name_buf, slash + 1, sizeof name_buf - 1);
+    } else {
+        pick_dir[0] = 0;
+        strncpy(name_buf, filename, sizeof name_buf - 1);
+    }
+    name_buf[sizeof name_buf - 1] = 0;
+    if (mode == 1 && !named) name_buf[0] = 0;           /* nothing to suggest yet */
+    pick_scan();
+}
+
+static void pick_enter(const char *name)
+{
+    int n = (int)strlen(pick_dir);
+    if (n + 1 + (int)strlen(name) >= (int)sizeof pick_dir) return;
+    pick_dir[n] = '\\';
+    strcpy(pick_dir + n + 1, name);
+    pick_scan();
+}
+
+static void pick_up(void)
+{
+    char *slash = strrchr(pick_dir, '\\');
+    if (slash) *slash = 0;
+    pick_scan();
+}
+
 static void finish_naming(void)
 {
-    char *p;
+    char *p, path[160];
+    if (!name_buf[0]) return;                           /* nothing to open or save yet */
     for (p = name_buf; *p; p++) if (*p >= 'a' && *p <= 'z') *p -= 32;
+    if (name_buf[0] == '\\') strncpy(path, name_buf, sizeof path - 1);     /* a whole path, typed */
+    else snprintf(path, sizeof path, "%s\\%s", pick_dir, name_buf);
+    path[sizeof path - 1] = 0;
+    if (naming == 2 && !strrchr(strrchr(path, '\\'), '.')) strncat(path, ".EMW", sizeof path - strlen(path) - 1);
     if (naming == 1) {
-        if (load_file(name_buf) == 0) { strcpy(filename, name_buf); named = 1; strcpy(status, "opened"); }
+        if (load_file(path) == 0) { strncpy(filename, path, sizeof filename - 1); named = 1; strcpy(status, "opened"); }
         else strcpy(status, "could not open it");
     } else {
-        if (save_file(name_buf) == 0) { strcpy(filename, name_buf); named = 1; strcpy(status, "saved"); }
+        if (save_file(path) == 0) { strncpy(filename, path, sizeof filename - 1); named = 1; strcpy(status, "saved"); }
         else strcpy(status, "could not save it");
     }
+    filename[sizeof filename - 1] = 0;
     naming = 0;
+}
+
+/* the head's buttons, from the right: Up, then previous / page / next */
+#define PB_NEXT(x, wd) ((x) + (wd) - 10 - 34)
+#define PB_PREV(x, wd) (PB_NEXT(x, wd) - 6 - 64 - 6 - 34)
+#define PB_UP(x, wd)   (PB_PREV(x, wd) - 6 - 70)
+
+static void pick_button(int x, int y, int w, int h, const char *label, int lit)
+{
+    round_fill(x, y, w, h, 4, lit ? 0x4A3618 : 0x2A2114);
+    round_frame(x, y, w, h, 4, lit ? AMBER : EDGE);
+    text(F_SMALL, x + (w - text_width(F_SMALL, label)) / 2, y + (h - text_height(F_SMALL)) / 2,
+         label, lit ? AMBER_HOT : TEXT);
+}
+
+static void pick_draw(int x, int y, int wd, int h)
+{
+    int rows = (h - PICK_HEAD - PICK_FOOT - 12) / PICK_ROW, per = rows * 2;
+    int pages_n = per ? (npicks + per - 1) / per : 1, col_w = (wd - 24) / 2, i;
+    int ry = y + PICK_HEAD + 8, fy = y + h - PICK_FOOT, xr = x + wd - 10, okx = xr - 90;
+    char buf[120];
+
+    if (pick_page >= pages_n) pick_page = pages_n ? pages_n - 1 : 0;
+    round_fill(x, y, wd, h, 4, PANEL);
+    round_frame(x, y, wd, h, 4, EDGE);
+
+    /* the head: what we are doing, and where */
+    vgradient(x + 1, y + 1, wd - 2, PICK_HEAD, PANEL_LIT, PANEL);
+    fill(x + 1, y + PICK_HEAD, wd - 2, 1, EDGE);
+    text(F_BOLD, x + 14, y + (PICK_HEAD - text_height(F_BOLD)) / 2, naming == 1 ? "Open" : "Save as", AMBER_HOT);
+    snprintf(buf, sizeof buf, "C:%s\\", pick_dir);
+    text_clipped(F_SMALL, x + 120, y + (PICK_HEAD - text_height(F_SMALL)) / 2, PB_UP(x, wd) - x - 130, buf, TEXT_DIM);
+    if (pick_dir[0]) pick_button(PB_UP(x, wd), y + 6, 70, PICK_HEAD - 12, "Up", 0);
+    if (pages_n > 1) {
+        pick_button(PB_PREV(x, wd), y + 6, 34, PICK_HEAD - 12, "<", pick_page > 0);
+        snprintf(buf, sizeof buf, "%d / %d", pick_page + 1, pages_n);
+        text(F_SMALL, PB_PREV(x, wd) + 34 + 6 + (64 - text_width(F_SMALL, buf)) / 2,
+             y + (PICK_HEAD - text_height(F_SMALL)) / 2, buf, TEXT_DIM);
+        pick_button(PB_NEXT(x, wd), y + 6, 34, PICK_HEAD - 12, ">", pick_page < pages_n - 1);
+    }
+
+    /* the rows, two columns of them */
+    if (!npicks) {
+        const char *s = "Nothing here";
+        text(F_NORMAL, x + (wd - text_width(F_NORMAL, s)) / 2, ry + 40, s, TEXT_DIM);
+    }
+    for (i = pick_page * per; i < npicks && i < (pick_page + 1) * per; i++) {
+        struct pick_entry *p = &picks[i];
+        int k = i - pick_page * per, rx = x + 12 + (k / rows) * col_w, yy = ry + (k % rows) * PICK_ROW;
+        int th = text_height(F_NORMAL), istext = p->is_dir || is_text_name(p->name);
+        uint32_t ink = p->is_dir ? AMBER_HOT : istext ? TEXT : TEXT_DIM;
+        if (k == pick_hot) round_fill(rx, yy, col_w - 6, PICK_ROW - 4, 4, SELECT);
+        if (p->is_dir) {                                /* a folder, with its tab */
+            round_fill(rx + 8, yy + 7, 10, 6, 2, AMBER);
+            round_fill(rx + 8, yy + 10, 20, 15, 3, AMBER);
+        } else {                                        /* a sheet, with some lines on it */
+            int l;
+            round_frame(rx + 11, yy + 5, 14, 20, 2, ink);
+            for (l = 0; l < 3; l++) fill(rx + 14, yy + 10 + l * 4, 8, 1, ink);
+        }
+        text_clipped(F_NORMAL, rx + 38, yy + (PICK_ROW - th) / 2, col_w - 38 - 74, p->shown, ink);
+        if (!p->is_dir) {
+            if (p->size >= 10240) snprintf(buf, sizeof buf, "%u KB", (unsigned)(p->size / 1024));
+            else snprintf(buf, sizeof buf, "%u B", (unsigned)p->size);
+            text(F_SMALL, rx + col_w - 14 - text_width(F_SMALL, buf), yy + (PICK_ROW - text_height(F_SMALL)) / 2, buf, TEXT_DIM);
+        }
+    }
+
+    /* the foot: the name, and the two buttons */
+    fill(x + 1, fy, wd - 2, 1, EDGE);
+    text(F_SMALL, x + 14, fy + (PICK_FOOT - text_height(F_SMALL)) / 2, "Name", TEXT_DIM);
+    round_fill(x + 64, fy + 9, okx - 6 - 90 - 6 - (x + 64), 30, 4, 0x0E0B08);
+    round_frame(x + 64, fy + 9, okx - 6 - 90 - 6 - (x + 64), 30, 4, AMBER);
+    snprintf(buf, sizeof buf, "%s_", name_buf);
+    text_clipped(F_NORMAL, x + 74, fy + 9 + (30 - text_height(F_NORMAL)) / 2, okx - 6 - 90 - 6 - (x + 64) - 20, buf, AMBER_HOT);
+    pick_button(okx - 6 - 90, fy + 9, 90, 30, "Cancel", 0);
+    pick_button(okx, fy + 9, 90, 30, naming == 1 ? "Open" : "Save", 1);
+}
+
+/* a click inside the picker; coordinates and rectangle both window-relative */
+static int pick_click(int ex, int ey, int x, int y, int wd, int h, int dbl)
+{
+    int rows = (h - PICK_HEAD - PICK_FOOT - 12) / PICK_ROW, per = rows * 2;
+    int pages_n = per ? (npicks + per - 1) / per : 1, col_w = (wd - 24) / 2;
+    int ry = y + PICK_HEAD + 8, fy = y + h - PICK_FOOT, xr = x + wd - 10, okx = xr - 90;
+
+    if (ey >= y + 6 && ey < y + PICK_HEAD - 6) {                /* the head */
+        if (pick_dir[0] && ex >= PB_UP(x, wd) && ex < PB_UP(x, wd) + 70) pick_up();
+        else if (pages_n > 1 && ex >= PB_PREV(x, wd) && ex < PB_PREV(x, wd) + 34 && pick_page > 0) pick_page--;
+        else if (pages_n > 1 && ex >= PB_NEXT(x, wd) && ex < PB_NEXT(x, wd) + 34 && pick_page < pages_n - 1) pick_page++;
+        return 1;
+    }
+    if (ey >= fy) {                                             /* the foot */
+        if (ex >= okx && ex < xr) finish_naming();
+        else if (ex >= okx - 6 - 90 && ex < okx - 6) naming = 0;
+        return 1;
+    }
+    if (ey >= ry && ey < ry + rows * PICK_ROW && ex >= x + 12) {   /* a row */
+        int col = (ex - x - 12) / col_w, k = col * rows + (ey - ry) / PICK_ROW, i = pick_page * per + k;
+        if (col > 1 || i >= npicks) return 1;
+        if (picks[i].is_dir) { pick_enter(picks[i].name); return 1; }
+        strncpy(name_buf, picks[i].name, sizeof name_buf - 1);
+        name_buf[sizeof name_buf - 1] = 0;
+        pick_hot = k;
+        if (naming == 1 || dbl) finish_naming();
+    }
+    return 1;
 }
 
 static void move_cursor(int to, int extend)
@@ -597,6 +803,7 @@ static int write_event(struct window *w, struct event *e)
             if (id) do_tool(id, sub);
             return 1;
         }
+        if (naming) return pick_click(e->a, e->b, MARGIN - 6, TOOL_H + 8 - 4, pw + 12, view_h + 8, e->dbl);
         if (e->b >= TOOL_H + 8 && e->b < TOOL_H + 8 + view_h) {
             int i, L = -1, y = e->b - TOOL_H - 8 + scroll_y;
             layout(pw - 8);
@@ -648,6 +855,8 @@ static int write_event(struct window *w, struct event *e)
         if (key == K_ESC) { naming = 0; return 1; }
         if (key == K_ENTER) { finish_naming(); return 1; }
         if (key == 0x0E) { if (n) name_buf[n - 1] = 0; return 1; }
+        if (key == K_PGUP) { if (pick_page > 0) pick_page--; return 1; }
+        if (key == K_PGDN) { pick_page++; return 1; }      /* drawn clamped below */
         if (e->b >= 32 && e->b < 127 && n < (int)sizeof name_buf - 1) {
             name_buf[n] = (char)e->b;
             name_buf[n + 1] = 0;
