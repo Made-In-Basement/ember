@@ -28,7 +28,7 @@
 
 #define CRYSTAL_W   (art_crystal.w)     /* the whole gem, as drawn */
 #define CRYSTAL_H   (art_crystal.h)
-#define MENU_W      260
+#define MENU_W      330
 #define SPLIT_GAP   10          /* clearance between a half and the menu */
 /* each half ends up just clear of the menu, so the menu occupies the gap */
 #define SPLIT_MAX   (MENU_W + SPLIT_GAP * 2)
@@ -40,12 +40,38 @@ static int open_state;          /* 0 shut, 1 opening, 2 open, 3 closing */
 static unsigned anim_start;
 static int hovered;
 
-static const char *items[] = {
-    "Files", "Music", "Prompt", "Calculator", "Write", "Doom", "Monitor", "Keyboard",
-    "Help", "About", "Exit to DOS", 0
+/* The menu in groups: an entry either does something or opens a group;
+   the first entry of a group goes back.  Big rows, for fingers. */
+struct entry { const char *label; int action, group; };
+static const struct entry main_menu[] = {
+    { "Files", A_FILES, -1 }, { "Write", A_WRITE, -1 }, { "Music", A_MUSIC, -1 },
+    { "Programs", -1, 1 }, { "System", -1, 2 }, { "Exit to DOS", A_EXIT, -1 }, { 0, 0, 0 }
 };
-#define ROW_H    34
+static const struct entry programs_menu[] = {
+    { "< Back", -1, 0 }, { "Prompt", A_PROMPT, -1 }, { "Calculator", A_CALC, -1 },
+    { "Pictures", A_VIEWER, -1 }, { "Clock", A_CLOCK, -1 }, { "Calendar", A_CALENDAR, -1 },
+    { "Notes", A_NOTES, -1 }, { "Screenshot", A_SHOT, -1 }, { "Doom", A_DOOM, -1 }, { 0, 0, 0 }
+};
+static const struct entry system_menu[] = {
+    { "< Back", -1, 0 }, { "Monitor", A_MONITOR, -1 }, { "Keyboard", A_KEYBOARD, -1 },
+    { "Help", A_HELP, -1 }, { "About", A_ABOUT, -1 }, { 0, 0, 0 }
+};
+static const struct entry *groups[] = { main_menu, programs_menu, system_menu };
+static const struct entry *cur = main_menu;
+#define ROW_H    46
 static int menu_sel = -1;
+
+static void choose(int item)
+{
+    const struct entry *e = &cur[item];
+    if (e->group >= 0) {                        /* into a group, or back out */
+        cur = groups[e->group];
+        menu_sel = -1;
+        return;
+    }
+    crystal_close();
+    shell_run_menu(e->action);
+}
 
 /* how far through the animation, 0..255 */
 static int progress(void)
@@ -70,7 +96,7 @@ static int progress(void)
 int crystal_reach(void)
 {
     int n = 0, h;
-    while (items[n]) n++;
+    while (cur[n].label) n++;
     h = n * ROW_H + 18;
     return crystal_y + CRYSTAL_H + h + 40;
 }
@@ -99,7 +125,7 @@ int crystal_is_open(void)
 static void draw_menu_panel(int t)
 {
     int n = 0, i, h, mx, my, shown;
-    while (items[n]) n++;
+    while (cur[n].label) n++;
     h = n * ROW_H + 18;
     mx = crystal_x - MENU_W / 2;
     my = crystal_y + CRYSTAL_H - 4;
@@ -122,8 +148,10 @@ static void draw_menu_panel(int t)
                 fill(mx + 4, ry - 2, 3, ROW_H, AMBER);
                 c = AMBER_HOT;
             }
-            text(F_NORMAL, mx + 24, ry + (ROW_H - text_height(F_NORMAL)) / 2 - 2,
-                 items[i], c);
+            text(F_BOLD, mx + 26, ry + (ROW_H - text_height(F_BOLD)) / 2 - 2,
+                 cur[i].label, c);
+            if (cur[i].group > 0)               /* it opens a group */
+                text(F_BOLD, mx + MENU_W - 40, ry + (ROW_H - text_height(F_BOLD)) / 2 - 2, ">", c);
         }
         clip_set(ox, oy, ow, oh);
     }
@@ -162,7 +190,7 @@ void crystal_draw(void)
 static int menu_hit(int x, int y)
 {
     int n = 0, mx, my;
-    while (items[n]) n++;
+    while (cur[n].label) n++;
     mx = crystal_x - MENU_W / 2;
     my = crystal_y + CRYSTAL_H - 4;
     if (x < mx || x >= mx + MENU_W) return -1;
@@ -181,6 +209,7 @@ void crystal_toggle(void)
     anim_start = now_ms();
     open_state = crystal_is_open() ? 3 : 1;
     menu_sel = -1;
+    cur = main_menu;
 }
 
 void crystal_close(void)
@@ -189,6 +218,7 @@ void crystal_close(void)
         anim_start = now_ms();
         open_state = 3;
     }
+    cur = main_menu;                            /* next time, from the top */
 }
 
 /* returns 1 if it swallowed the event */
@@ -196,7 +226,7 @@ int crystal_event(struct event *e)
 {
     if (e->type == EV_KEY && crystal_is_open()) {
         int n = 0;
-        while (items[n]) n++;
+        while (cur[n].label) n++;
         if (e->a == K_DOWN) {
             menu_sel = (menu_sel + 1) % n;
             return 1;
@@ -206,9 +236,8 @@ int crystal_event(struct event *e)
             return 1;
         }
         if (e->a == K_ENTER) {
-            int item = menu_sel;
-            crystal_close();
-            if (item >= 0) shell_run_menu(item);
+            if (menu_sel >= 0) choose(menu_sel);
+            else crystal_close();
             return 1;
         }
         if (e->a == K_ESC) { crystal_close(); return 1; }
@@ -224,8 +253,8 @@ int crystal_event(struct event *e)
         if (crystal_hit(e->a, e->b)) { crystal_toggle(); return 1; }
         if (crystal_is_open()) {
             int item = menu_hit(e->a, e->b);
-            crystal_close();
-            if (item >= 0) shell_run_menu(item);
+            if (item >= 0) choose(item);
+            else crystal_close();
             return 1;
         }
     }

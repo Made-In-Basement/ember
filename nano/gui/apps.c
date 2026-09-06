@@ -97,6 +97,20 @@ static void soon_draw(struct window *w)
 }
 
 void app_text(void)  { win_open("Text Viewer", 460, 300, soon_draw, 0); }
+
+/* a small window with a line or two to say */
+static char notice_l1[96], notice_l2[96];
+static void notice_draw(struct window *w)
+{
+    text(F_NORMAL, w->x + 20, w->y + 22, notice_l1, TEXT);
+    text(F_SMALL, w->x + 20, w->y + 22 + text_height(F_NORMAL) + 6, notice_l2, TEXT_DIM);
+}
+void app_notice(const char *title, const char *line1, const char *line2)
+{
+    strncpy(notice_l1, line1, sizeof notice_l1 - 1);
+    strncpy(notice_l2, line2, sizeof notice_l2 - 1);
+    win_open(title, 420, 96, notice_draw, 0);
+}
 void app_doom(void)  { shell_launch("\\DOOM\\NDOOM.N32"); }
 
 /* ---------------------------------------------------------------- pictures */

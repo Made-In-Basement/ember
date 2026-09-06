@@ -305,6 +305,8 @@ static void enter_list_row(void)
             shell_launch(path);
         else if (dot && (!strcmp(dot, ".TXT") || !strcmp(dot, ".EMW")))
             app_write_open(path);
+        else if (dot && (!strcmp(dot, ".BMP") || !strcmp(dot, ".JPG") || !strcmp(dot, ".JPEG")))
+            app_viewer_open(path);
         return;
     }
     if (!strcmp(list[list_sel].name, "..")) {

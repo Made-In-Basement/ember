@@ -19,6 +19,7 @@
 #include "input.h"
 #include "shell.h"
 #include "paudio.h"
+#include "power.h"
 
 #define TEXT      0xD8C8B0
 #define TEXT_DIM  0x8A7C68
@@ -48,7 +49,6 @@ static int have_dts, tjmax = 100, temp_c = -1;
 static int have_aperf, mhz;
 static uint64_t last_aperf, last_mperf;
 static int ram_mb = -1, apm_ok = -1, bat_pct = -1, bat_ac = -1, bat_state = -1;
-static int ec_ok = -1, bat_cycles = -1, bat_mwh = -1, bat_full_mwh = -1;
 static unsigned last_bat_ms;
 static int busy_hist[HIST], temp_hist[HIST], hist_n;
 
@@ -173,62 +173,6 @@ static void sample_battery(void)
     bat_ac = r.bx >> 8;                         /* 0 off, 1 on, 2 backup, FF unknown */
     bat_state = r.bx & 0xFF;                    /* 0 high, 1 low, 2 critical, 3 charging */
     bat_pct = (r.cx & 0xFF) == 0xFF ? -1 : (int)(r.cx & 0xFF);
-}
-
-/* ------------------------------------------------------------ the embedded controller */
-/* The laptop's embedded controller keeps the battery's figures in its
-   own small memory, read a byte at a time through two ports: a command
-   to port 66h, the address to port 62h, the byte back from 62h, with a
-   busy flag to wait on between.  Where each figure lives came from the
-   firmware's own table (docs/HARDWARE.md). */
-#define EC_DATA   0x62
-#define EC_CMD    0x66
-#define EC_IBF    0x02
-#define EC_OBF    0x01
-
-static int ec_wait(int mask, int want)
-{
-    unsigned t0 = now_us();
-    while ((inb(EC_CMD) & mask) != want) {
-        if (now_us() - t0 > 20000) return -1;   /* 20 ms: it is not answering */
-    }
-    return 0;
-}
-
-static int ec_read(int addr)
-{
-    if (ec_wait(EC_IBF, 0) != 0) return -1;
-    outb(EC_CMD, 0x80);                         /* read a byte */
-    if (ec_wait(EC_IBF, 0) != 0) return -1;
-    outb(EC_DATA, (uint8_t)addr);
-    if (ec_wait(EC_OBF, EC_OBF) != 0) return -1;
-    return inb(EC_DATA);
-}
-
-static int ec_read16(int addr)
-{
-    int lo = ec_read(addr), hi = ec_read(addr + 1);
-    if (lo < 0 || hi < 0) return -1;
-    return lo | (hi << 8);
-}
-
-/* the Lenovo layout: 67.0 mains present; 96: bit 0 battery present,
-   bit 2 charging, bit 4 discharging; 106 remaining, 108 full, 164 cycles */
-static void sample_battery_ec(void)
-{
-    int rc = ec_read16(106), fc = ec_read16(108), st = ec_read(96), ac = ec_read(67);
-    if (rc < 0 || fc <= 0 || rc == 0xFFFF || fc == 0xFFFF || rc > fc * 12 / 10) {
-        ec_ok = 0;
-        return;
-    }
-    ec_ok = 1;
-    bat_mwh = rc;
-    bat_full_mwh = fc;
-    bat_pct = rc * 100 / fc;
-    if (bat_pct > 100) bat_pct = 100;
-    bat_ac = ac >= 0 ? (ac & 1) : -1;
-    bat_state = st >= 0 ? ((st & 4) ? 3 : (st & 16) ? 0 : 1) : -1;   /* 3 charging, 0 discharging, 1 idle */
-    bat_cycles = ec_read16(164);
 }
 
 /* ------------------------------------------------------------ drawing */
@@ -368,14 +312,16 @@ static void monitor_draw(struct window *w)
 
     /* ---- the battery ---- */
     card(x + 28 + cw, y, cw, 92, "Battery");
-    if ((apm_ok > 0 || ec_ok > 0) && bat_pct >= 0) {
+    if (power_known() && power_percent() >= 0) {
+        int pct = power_percent();
+        bar(x + 42 + cw, y + 40, cw - 28, pct, pct <= 15 ? WARM : GOOD);
+        snprintf(b, sizeof b, "%d%%, %s%s; %d cycles", pct,
+                 power_on_mains() == 1 ? "on mains" : power_on_mains() == 0 ? "on battery" : "",
+                 power_charging() == 1 ? ", charging" : power_on_mains() == 0 ? ", discharging" : "",
+                 power_cycles());
+        text(F_SMALL, x + 42 + cw, y + 62, b, TEXT);
+    } else if (apm_ok > 0 && bat_pct >= 0) {
         bar(x + 42 + cw, y + 40, cw - 28, bat_pct, bat_pct <= 15 ? WARM : GOOD);
-        if (ec_ok > 0)
-            snprintf(b, sizeof b, "%d%%, %s%s%s; %d cycles", bat_pct,
-                     bat_ac == 1 ? "on mains" : bat_ac == 0 ? "on battery" : "",
-                     bat_state == 3 ? ", charging" : bat_state == 0 ? ", discharging" : "",
-                     bat_ac == 1 && bat_state != 3 && bat_pct >= 95 ? ", full" : "", bat_cycles);
-        else
             snprintf(b, sizeof b, "%d%%, %s%s", bat_pct,
                      bat_ac == 1 ? "on mains" : bat_ac == 0 ? "on battery" : "power unknown",
                      bat_state == 3 ? ", charging" : bat_state == 2 ? ", critical" : "");
@@ -383,7 +329,7 @@ static void monitor_draw(struct window *w)
     } else {
         bar(x + 42 + cw, y + 40, cw - 28, 0, GOOD);
         text(F_SMALL, x + 42 + cw, y + 62,
-             ec_ok == 0 ? "no battery, or none the controller will show" : "no reading yet", TEXT_DIM);
+             "no battery, or none the controller will show", TEXT_DIM);
     }
 
     /* ---- the display ---- */
@@ -411,7 +357,6 @@ void app_monitor(void)
     if (ram_mb < 0) probe_memory();
     if (apm_ok < 0) probe_battery();
     sample_battery();
-    if (apm_ok <= 0) sample_battery_ec();       /* the controller, where the firmware is silent */
     sample_processor();
     last = shell_stats;
     last_ms = now_ms();
@@ -444,7 +389,6 @@ int monitor_tick(void)
     sample_processor();
     if (now - last_bat_ms > 5000) {
         sample_battery();
-        if (apm_ok <= 0) sample_battery_ec();
         last_bat_ms = now;
     }
     busy_hist[hist_n % HIST] = (int)busy_pct;

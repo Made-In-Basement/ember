@@ -62,7 +62,27 @@ int  popup_is_open(void);
 void popup_rect(int *x, int *y, int *w, int *h);
 int  popup_event(struct event *e);
 
+/* what the menu and the icons can do */
+enum { A_FILES, A_MUSIC, A_PROMPT, A_CALC, A_WRITE, A_DOOM, A_MONITOR, A_KEYBOARD, A_HELP,
+       A_ABOUT, A_EXIT, A_VIEWER, A_CLOCK, A_CALENDAR, A_NOTES, A_SHOT, A_PAINT, A_DISK };
+
 void app_pictures(void);                /* choose a picture for the background */
+uint32_t *wall_decode(const char *path);  /* a picture, screen-sized; free it */
+void app_notice(const char *title, const char *line1, const char *line2);
+void app_viewer(void);
+void app_viewer_open(const char *path);
+void viewer_closed(int id);
+void app_clock(void);
+int  clock_tick(void);
+int  clock_window(void);
+void clock_closed(int id);
+void app_calendar(void);
+void calendar_closed(int id);
+void app_notes(void);
+void app_notes_new(void);
+void notes_closed(int id);
+void app_screenshot(void);
+int  screenshot_save(char *out, int out_size);
 void app_calc(void);
 void app_prompt(void);
 void app_about(void);

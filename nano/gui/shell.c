@@ -10,6 +10,7 @@
 #include "draw.h"
 #include "input.h"
 #include "touch.h"
+#include "power.h"
 #include "shell.h"
 #include "guiart.h"
 
@@ -120,6 +121,10 @@ void win_close(int id)
     music_closed(id);
     monitor_closed(id);
     write_closed(id);
+    viewer_closed(id);
+    clock_closed(id);
+    calendar_closed(id);
+    notes_closed(id);
     windows[id].open = 0;
     for (i = 0, j = 0; i < window_count; i++)
         if (z_order[i] != id) z_order[j++] = z_order[i];
@@ -212,8 +217,8 @@ static const struct desk_icon icons[] = {
     { "About",      &art_info },
 };
 #define ICON_COUNT 7
-/* which menu entry each icon stands for */
-static const int icon_menu[ICON_COUNT] = { 0, 1, 2, 3, 4, 5, 9 };
+/* what each icon does */
+static const int icon_menu[ICON_COUNT] = { A_FILES, A_MUSIC, A_PROMPT, A_CALC, A_WRITE, A_DOOM, A_ABOUT };
 #define ICON_W     96
 #define ICON_H     100
 #define ICON_X     28
@@ -296,6 +301,23 @@ static void draw_bar(void)
     read_clock(clk, sizeof clk);
     text(F_BOLD, scr_w - 24 - text_width(F_BOLD, clk),
          (BAR_H - text_height(F_BOLD)) / 2, clk, AMBER);
+
+    /* the battery, when the machine has one it will show */
+    if (power_known() && power_percent() >= 0) {
+        int pct = power_percent(), bx0 = scr_w - 24 - text_width(F_BOLD, clk) - 118;
+        int by = BAR_H / 2 - 6, lit = 26 * pct / 100;
+        uint32_t c = pct <= 15 ? 0xF0602A : pct <= 40 ? AMBER : 0x9BD27A;
+        char pb[8];
+        round_frame(bx0 + 40, by, 30, 13, 2, TEXT_DIM);
+        fill(bx0 + 70, by + 3, 3, 7, TEXT_DIM);                 /* the nub */
+        if (lit > 0) fill(bx0 + 42, by + 2, lit, 9, c);
+        if (power_charging() == 1) {                            /* a bolt: two strokes */
+            fill(bx0 + 53, by + 2, 2, 5, 0x1A140D);
+            fill(bx0 + 55, by + 6, 2, 5, 0x1A140D);
+        }
+        snprintf(pb, sizeof pb, "%d%%", pct);
+        text(F_SMALL, bx0 + 36 - text_width(F_SMALL, pb), (BAR_H - text_height(F_SMALL)) / 2, pb, TEXT_DIM);
+    }
 }
 
 #define CUR_W 13
@@ -382,20 +404,25 @@ static void draw_all(void)
 }
 
 /* ---------------------------------------------------------------- events */
-void shell_run_menu(int item)
+void shell_run_menu(int action)
 {
-    switch (item) {
-    case 0: app_files(); break;
-    case 1: app_music(); break;
-    case 2: app_prompt(); break;
-    case 3: app_calc(); break;
-    case 4: app_write(); break;
-    case 5: app_doom(); break;
-    case 6: app_monitor(); break;
-    case 7: osk_toggle(); break;                /* the caller repaints everything */
-    case 8: app_help(); break;
-    case 9: app_about(); break;
-    case 10: quit_requested = 1; break;
+    switch (action) {
+    case A_FILES:    app_files(); break;
+    case A_MUSIC:    app_music(); break;
+    case A_PROMPT:   app_prompt(); break;
+    case A_CALC:     app_calc(); break;
+    case A_WRITE:    app_write(); break;
+    case A_DOOM:     app_doom(); break;
+    case A_MONITOR:  app_monitor(); break;
+    case A_KEYBOARD: osk_toggle(); break;       /* the caller repaints everything */
+    case A_HELP:     app_help(); break;
+    case A_ABOUT:    app_about(); break;
+    case A_EXIT:     quit_requested = 1; break;
+    case A_VIEWER:   app_viewer(); break;
+    case A_CLOCK:    app_clock(); break;
+    case A_CALENDAR: app_calendar(); break;
+    case A_NOTES:    app_notes(); break;
+    case A_SHOT:     app_screenshot(); break;
     default: break;
     }
 }
@@ -573,6 +600,7 @@ static void handle(struct event *e)
             break;
         }
         if (e->a == K_F1) { app_help(); break; }
+        if ((e->a & ~K_SHIFT) == 0x137) { app_screenshot(); break; }   /* Print Screen */
         if (e->a == K_F10) { quit_requested = 1; break; }
         if (focused < 0 || !windows[focused].event) {
             /* nothing is listening: the arrows walk the desktop icons */
@@ -673,6 +701,11 @@ int main(int argc, char **argv)
             int x, y, w, h;
             osk_rect(&x, &y, &w, &h);
             need_rect(x, y, w, h);
+        }
+        power_tick();
+        if (clock_tick()) {
+            int id = clock_window();
+            if (id >= 0) need_window(&windows[id], windows[id].x, windows[id].y);
         }
         moved = (mouse_x != last_x || mouse_y != last_y);
 

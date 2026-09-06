@@ -156,7 +156,7 @@ static int is_jpeg(const char *path)
     return d && (!strcasecmp(d, ".JPG") || !strcasecmp(d, ".JPEG"));
 }
 
-int wall_load(const char *path)
+uint32_t *wall_decode(const char *path)
 {
     uint8_t head[54], pal[1024];
     uint8_t *row = 0;
@@ -166,19 +166,12 @@ int wall_load(const char *path)
 
     if (is_jpeg(path)) {
         uint32_t *pic = malloc((size_t)scr_w * scr_h * 4);
-        if (!pic) return -1;
-        if (jpeg_load(path, pic) != 0) { free(pic); return -1; }
-        if (picture) free(picture);
-        picture = pic;
-        picture_w = scr_w;
-        picture_h = scr_h;
-        wall_kind = WALL_PICTURE;
-        strncpy(wall_file, path, sizeof wall_file - 1);
-        wall_file[sizeof wall_file - 1] = 0;
-        return 0;
+        if (!pic) return 0;
+        if (jpeg_load(path, pic) != 0) { free(pic); return 0; }
+        return pic;
     }
     fd = sys_open(path);
-    if (fd < 0) return -1;
+    if (fd < 0) return 0;
     if (sys_read(fd, head, 54) != 54 || head[0] != 'B' || head[1] != 'M')
         goto fail;
     data_off = rd32(head + 10);
@@ -227,20 +220,28 @@ int wall_load(const char *path)
     }
     sys_close(fd);
     free(row);
+    return dest;
+fail:
+    sys_close(fd);
+    if (row) free(row);
+    if (dest) free(dest);
+    return 0;
+}
+
+int wall_load(const char *path)
+{
+    uint32_t *pic = wall_decode(path);
+    if (!pic) return -1;
     if (picture) free(picture);
-    picture = dest;
+    picture = pic;
     picture_w = scr_w;
     picture_h = scr_h;
     wall_kind = WALL_PICTURE;
     strncpy(wall_file, path, sizeof wall_file - 1);
     wall_file[sizeof wall_file - 1] = 0;
     return 0;
-fail:
-    sys_close(fd);
-    if (row) free(row);
-    if (dest) free(dest);
-    return -1;
 }
+
 
 void wall_set(int kind)
 {
