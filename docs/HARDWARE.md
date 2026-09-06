@@ -72,3 +72,18 @@ clock at standard speed.
 checks each host's identity register (44570140h), powers it up if need
 be, reads the HID descriptor from each device, then switches the device
 on, resets it and lists the reports it gives while touched.
+
+## The touchpad, working (2026-09-05, I2C.TXT run 3)
+
+Waking host 0 through its configuration page (FE104084h, clear bits 0-1)
+brought the block up: identity 44570140h, version "*511", FIFOs of 32.
+The pad answered at 2Ch with its HID descriptor: Synaptics 06CB:2714,
+report descriptor 133 bytes, input register 0024h, command register
+0022h, data register 0023h, reports up to 32 bytes.  In its default mode
+it sends a mouse report: `06 00 01 00 dx dy` - length 6, report 1,
+buttons, then signed x and y.  Polling it with plain reads works; an idle
+pad answers with a zero length.  nano/gui/touch.c is the driver.
+
+The touchscreen (host 1, 4Ah) answered its descriptor too - Atmel
+03EB:8A10, input register 00D3h, reports up to 20 bytes - but has not yet
+been seen to report; nobody had touched it during its window.

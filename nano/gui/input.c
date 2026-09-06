@@ -19,6 +19,7 @@
 
 int mouse_x, mouse_y, mouse_buttons;
 int mouse_present, mouse_via_bios;
+static int listen_only;                 /* a touchpad points; PS/2 bytes are counted, not used */
 
 #define STUB_OFF 0xF800                 /* a far-return stub in the bounce */
 
@@ -102,14 +103,21 @@ static void mouse_byte(uint8_t b)
     dy = packet[2];
     if (packet[0] & 0x10) dx |= ~0xFF;          /* the sign lives in byte 0 */
     if (packet[0] & 0x20) dy |= ~0xFF;
+    input_inject_mouse(dx, -dy, buttons);       /* the mouse counts up, screens down */
+}
 
+/* Movement and buttons from any pointing device: dy is positive downwards.
+   Called from an interrupt or from the main loop; either way it only
+   moves the pointer and queues what changed. */
+void input_inject_mouse(int dx, int dy, int buttons)
+{
     /* A gentle acceleration: a slow movement stays precise, a quick one
        crosses the screen without a second push. */
     if (dx > 6 || dx < -6) dx *= 2;
     if (dy > 6 || dy < -6) dy *= 2;
 
     mouse_x += dx;
-    mouse_y -= dy;                              /* the mouse counts up, screens down */
+    mouse_y += dy;
     if (mouse_x < 0) mouse_x = 0;
     if (mouse_y < 0) mouse_y = 0;
     if (mouse_x > mouse_max_x) mouse_x = mouse_max_x;
@@ -212,7 +220,12 @@ static int bios_assist(void)
     return 0;
 }
 
-int input_open(int width, int height)
+/* passive: do not ask the PS/2 port anything, just listen.  Used when a
+   touchpad is doing the pointing and the firmware's impersonated mouse is
+   welcome to keep sending packets but not worth provoking: on one laptop
+   commands to that port upset the firmware enough that the stick could
+   no longer be written. */
+int input_open(int width, int height, int passive)
 {
     uint8_t status, b, mask;
     int tries;
@@ -223,6 +236,14 @@ int input_open(int width, int height)
     mouse_y = height / 2;
     packet_n = 0;
     probe_note[0] = 0;
+
+    if (passive) {
+        sys_log("mouse: listening only");
+        listen_only = 1;
+        mouse_present = 1;
+        sys_set_mouse_handler(mouse_irq);
+        return 0;
+    }
 
     /* The key that started us is still coming up; let its release pass
        through the keyboard's interrupt rather than land in our probe. */
@@ -379,7 +400,8 @@ static void mouse_irq(void)
     b = inb(0x60);
     n_irq12++;
     record(status, b, 12);
-    mouse_byte(b);
+    if (!listen_only)
+        mouse_byte(b);
 }
 
 static void keyboard_irq(void)

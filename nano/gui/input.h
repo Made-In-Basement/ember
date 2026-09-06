@@ -11,7 +11,8 @@ struct event { int type, a, b; };        /* mouse: a,b = x,y.  key: a = scan, b 
 extern int mouse_x, mouse_y, mouse_buttons, mouse_present, mouse_via_bios;
 extern int mouse_max_x, mouse_max_y;
 
-int  input_open(int width, int height);
+int  input_open(int width, int height, int passive);
+void input_inject_mouse(int dx, int dy, int buttons);   /* dy positive = down */
 void input_start_keyboard(void);
 void input_close(void);
 int  next_event(struct event *e);

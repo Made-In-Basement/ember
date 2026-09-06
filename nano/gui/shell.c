@@ -9,6 +9,7 @@
 #include "nano.h"
 #include "draw.h"
 #include "input.h"
+#include "touch.h"
 #include "shell.h"
 #include "guiart.h"
 
@@ -510,7 +511,8 @@ int main(int argc, char **argv)
     draw_present();
 
     input_start_keyboard();
-    input_open(scr_w, scr_h);
+    touch_open();                               /* a laptop's pad, over I2C */
+    input_open(scr_w, scr_h, touch_present);
     wall_load_config();
     app_about();
     draw_all();
@@ -520,6 +522,7 @@ int main(int argc, char **argv)
     while (!quit_requested) {
         int moved;
         redraw_level = REDRAW_NONE;
+        touch_poll();
         while (next_event(&e)) handle(&e);
         if (crystal_busy()) need(REDRAW_ALL);           /* the gem is moving */
         if (now_ms() - last_clock > 20000) {
@@ -562,6 +565,7 @@ int main(int argc, char **argv)
         }
     }
 
+    touch_close();
     input_close();
     draw_close();
     return 0;
