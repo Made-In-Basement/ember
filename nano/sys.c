@@ -179,6 +179,20 @@ void sys_log(const char *s)
     rm_int(rc);
 }
 
+/* Lines for the kernel's shell to run once this program has ended: how
+   the desktop starts a DOS program and is started again after it. */
+#define AFTER_OFF 0xF900
+void sys_run_after(const char *lines)
+{
+    size_t n = strlen(lines);
+    if (n > 500) n = 500;
+    memcpy(nx_bounce + AFTER_OFF, lines, n);
+    nx_bounce[AFTER_OFF + n] = 0;
+    rc_init(0xF4, 0, 0x21);
+    rc->dx = AFTER_OFF;
+    rm_int(rc);
+}
+
 void sys_logf(const char *fmt, ...)
 {
     char buf[200];

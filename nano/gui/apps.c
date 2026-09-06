@@ -97,7 +97,7 @@ static void soon_draw(struct window *w)
 }
 
 void app_text(void)  { win_open("Text Viewer", 460, 300, soon_draw, 0); }
-void app_doom(void)  { win_open("Doom", 380, 160, soon_draw, 0); }
+void app_doom(void)  { shell_launch("\\DOOM\\NDOOM.N32"); }
 
 /* ---------------------------------------------------------------- pictures */
 /* A short list of the BMP files on the disk, so a background can be picked

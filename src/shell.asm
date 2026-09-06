@@ -14,6 +14,12 @@ shell_main:
         mov     ds, ax
         mov     es, ax
         mov     sp, 0xFFFE                      ; fresh stack every command
+        cmp     byte [after_pending], 0         ; a program left orders
+        je      .prompt
+        call    take_after
+        call    run_batch_lines
+        jmp     .loop
+.prompt:
         call    print_prompt
         mov     di, cmdline
         mov     cx, CMDLINE_MAX
@@ -225,6 +231,45 @@ run_batch:
         mov     byte [batch_end], 0
         mov     word [batch_pos], 0
         mov     byte [batch_echo], 1
+        jmp     run_batch_lines
+.nested:
+        mov     si, msg_batch_nested
+        call    puts
+        ret
+.too_large:
+        mov     si, msg_batch_large
+        call    puts
+        ret
+.disk_error:
+        mov     ax, ds
+        mov     es, ax
+        mov     si, msg_disk_error
+        call    puts
+        ret
+
+; take_after: what a program asked to have run after it (see fF4) becomes
+;   the batch in progress, quietly, whatever batch was running before
+take_after:
+        push    si
+        push    di
+        push    cx
+        mov     si, after_buf
+        mov     di, batch_buf
+        mov     cx, AFTER_MAX
+        rep     movsb
+        mov     byte [after_pending], 0
+        mov     byte [after_buf], 0
+        mov     byte [batch_active], 1
+        mov     byte [batch_end], 0
+        mov     word [batch_pos], 0
+        mov     byte [batch_echo], 0
+        pop     cx
+        pop     di
+        pop     si
+        ret
+
+; run_batch_lines: execute batch_buf from batch_pos on
+run_batch_lines:
 .line:
         mov     si, [batch_pos]
         add     si, batch_buf
@@ -267,23 +312,43 @@ run_batch:
         call    puts
         call    crlf
 .exec:  call    execute_line
-.next:  cmp     byte [batch_end], 0
+.next:  cmp     byte [after_pending], 0         ; the program that just ran left orders
+        je      .go_on
+        call    take_after
+        jmp     .line
+.go_on: cmp     byte [batch_end], 0
         je      .line
         mov     byte [batch_active], 0
         ret
-.nested:
-        mov     si, msg_batch_nested
-        call    puts
-        ret
-.too_large:
-        mov     si, msg_batch_large
-        call    puts
-        ret
-.disk_error:
-        mov     ax, ds
+
+; fF4: INT 21h AH=F4h - run these lines (DS:DX, NUL-terminated, CR/LF
+;   between them) after the calling program ends.  A desktop uses it to
+;   start a DOS program and be started again afterwards.
+fF4:    push    es
+        push    ds
+        push    si
+        push    di
+        push    cx
+        mov     ax, cs
         mov     es, ax
-        mov     si, msg_disk_error
-        call    puts
+        mov     ds, R_DS
+        mov     si, R_DX
+        mov     di, after_buf
+        mov     cx, AFTER_MAX - 1
+.copy:  lodsb
+        stosb
+        or      al, al
+        jz      .copied
+        loop    .copy
+        mov     byte [es:di], 0
+.copied:
+        mov     byte [es:after_pending], 1
+        pop     cx
+        pop     di
+        pop     si
+        pop     ds
+        pop     es
+        mov     R_AX, 0
         ret
 
 ; -----------------------------------------------------------------------------
@@ -1571,6 +1636,7 @@ msg_rmdir_failed: db "Cannot remove it: a directory must exist, be empty and not
 msg_ren_usage:  db "Usage: REN oldname newname", 13, 10, 0
 msg_ren_failed: db "Cannot rename that", 13, 10, 0
 autoexec_name:  db "\AUTOEXEC.BAT", 0
+after_pending:  db 0
 batch_active:   db 0
 batch_end:      db 0
 batch_echo:     db 1
@@ -1668,6 +1734,7 @@ copy_out:       resw 1
 copy_total:     resd 1
 copy_buf:       resb COPY_CHUNK
 batch_buf:      resb BATCH_MAX + 1
+after_buf:      resb AFTER_MAX
 cmdline:        resb CMDLINE_MAX + 1
 cmd_word:       resb 16
 tmp_path:       resb 64

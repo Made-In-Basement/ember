@@ -19,6 +19,7 @@
 %include "../build/version.inc"
 KERNEL_SEG      equ 0x0800
 BATCH_MAX       equ 2047
+AFTER_MAX       equ 512                         ; lines a program leaves to run after it
 
 section .text
 start:

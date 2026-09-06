@@ -60,6 +60,7 @@ long sys_lseek(int h, long off, int whence);
 int  sys_close(int h);
 void sys_puts(const char *s);
 void sys_log(const char *s);            /* a line into EMBER.LOG */
+void sys_run_after(const char *lines);  /* for the shell, once we have ended */
 void sys_logf(const char *fmt, ...);
 void sys_set_video_mode(int mode);
 int  sys_vbe_info(struct vbe_info *info);          /* 0 if the card answers */

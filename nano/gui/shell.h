@@ -24,6 +24,8 @@ int  win_count(void);
 int  win_focused(void);
 void shell_quit(void);
 void shell_run_menu(int item);
+void shell_launch(const char *path);    /* a DOS program, and the desktop again after */
+int  shell_runnable(const char *name);
 
 /* the crystal at the top of the screen */
 extern int crystal_x, crystal_y;

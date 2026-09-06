@@ -40,6 +40,49 @@ static int drag_win = -1, drag_dx, drag_dy;
 #define drag_active (drag_win >= 0)
 static int quit_requested;
 struct shell_stats shell_stats;
+static char start_arg[24];               /* how we were started, to start again the same */
+
+/* Run a DOS program: the kernel's shell is given the lines to run once
+   the desktop has ended - into the program's folder, the program, back
+   to the root, and the desktop again - and the desktop ends. */
+void shell_launch(const char *path)
+{
+    char lines[400], dir[128], name[64];
+    const char *slash;
+    int n;
+    if (path[1] == ':') path += 2;                  /* the shell knows its drive */
+    slash = strrchr(path, '\\');
+    if (slash) {
+        n = (int)(slash - path);
+        if (n == 0) n = 1;                          /* the root */
+        if (n >= (int)sizeof dir) n = sizeof dir - 1;
+        memcpy(dir, path, n);
+        dir[n] = 0;
+        strncpy(name, slash + 1, sizeof name - 1);
+    } else {
+        strcpy(dir, "\\");
+        strncpy(name, path, sizeof name - 1);
+    }
+    name[sizeof name - 1] = 0;
+    {
+        char *dot = strrchr(name, '.');             /* typed as a command, without it */
+        if (dot && (!strcmp(dot, ".COM") || !strcmp(dot, ".EXE") ||
+                    !strcmp(dot, ".N32") || !strcmp(dot, ".BAT")))
+            *dot = 0;
+    }
+    snprintf(lines, sizeof lines, "CD %s\r\n%s\r\nCD \\\r\nEMBER %s\r\n", dir, name, start_arg);
+    sys_logf("launch: %s in %s", name, dir);
+    sys_run_after(lines);
+    quit_requested = 1;
+}
+
+/* can the file browser start this? */
+int shell_runnable(const char *name)
+{
+    const char *dot = strrchr(name, '.');
+    return dot && (!strcmp(dot, ".COM") || !strcmp(dot, ".EXE") ||
+                   !strcmp(dot, ".N32") || !strcmp(dot, ".BAT"));
+}
 static int want_width = 1920, want_height = 1200;
 
 /* ---------------------------------------------------------------- windows */
@@ -557,6 +600,7 @@ int main(int argc, char **argv)
         int w = 1920, h = 1200, n = 0, i;
         const char *a = argc > 1 ? argv[1] : 0;
         if (a) {
+            strncpy(start_arg, a, sizeof start_arg - 1);
             for (i = 0; a[i] >= '0' && a[i] <= '9'; i++) n = n * 10 + (a[i] - '0');
             if (n >= 640) {
                 w = n;

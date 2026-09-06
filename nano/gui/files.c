@@ -297,7 +297,14 @@ static void files_draw(struct window *w)
 static void enter_list_row(void)
 {
     char path[PATH_MAX];
-    if (list_sel >= list_count || !list[list_sel].is_dir) return;
+    if (list_sel >= list_count) return;
+    if (!list[list_sel].is_dir) {
+        if (shell_runnable(list[list_sel].name)) {
+            join(path, cur_path, list[list_sel].name);
+            shell_launch(path);
+        }
+        return;
+    }
     if (!strcmp(list[list_sel].name, "..")) {
         char *p = strrchr(cur_path, '\\');
         if (p) *p = 0;
