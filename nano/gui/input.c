@@ -141,6 +141,16 @@ void input_inject_absolute(int x, int y, int down)
     if (y < 0) y = 0;
     if (x > mouse_max_x) x = mouse_max_x;
     if (y > mouse_max_y) y = mouse_max_y;
+    if (down && !(last_buttons & 1)) {
+        /* a finger landing: the press happens where it lands, with no
+           slide from where the last one lifted */
+        mouse_x = x;
+        mouse_y = y;
+        mouse_buttons = 1;
+        push(EV_MOUSE_DOWN, mouse_x, mouse_y);
+        last_buttons = 1;
+        return;
+    }
     if (x != mouse_x || y != mouse_y) {
         mouse_x = x;
         mouse_y = y;

@@ -643,6 +643,13 @@ static void handle(struct event *e)
     case EV_MOUSE_UP:
         drag_win = -1;
         resize_win = -1;
+        if (focused >= 0 && windows[focused].event) {
+            struct window *w = &windows[focused];
+            struct event local = *e;
+            local.a -= w->x;
+            local.b -= w->y;
+            w->event(w, &local);
+        }
         break;
     case EV_MOUSE_MOVE:
         if (resize_win >= 0) {

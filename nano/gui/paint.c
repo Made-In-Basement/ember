@@ -393,6 +393,7 @@ static int paint_event(struct window *w, struct event *e)
         }
         return 1;
     }
+    if (e->type == EV_MOUSE_UP) { stroking = 0; return 0; }     /* the finger has lifted */
     if (e->type == EV_MOUSE_MOVE && stroking && (mouse_buttons & 1)) {
         int x = e->a - cx0, y = e->b - cy0;
         if (x < 0) x = 0; if (y < 0) y = 0;
