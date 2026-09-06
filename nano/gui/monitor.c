@@ -84,6 +84,21 @@ static void monitor_draw(struct window *w)
     line(w, 6, "Screen", b, TEXT_DIM);
     fill(w->x + 20, w->y + 16 + 7 * 26 + 4, w->w - 40, 1, EDGE);
     text(F_SMALL, w->x + 20, w->y + 16 + 7 * 26 + 12, fb_wc_note, TEXT_DIM);
+    {
+        static const char *tn[] = { "UC", "WC", "?", "?", "WT", "WP", "WB" };
+        int i, y = w->y + 16 + 7 * 26 + 34;
+        snprintf(b, sizeof b, "MTRR default type %s; %d in use:",
+                 mtrr_default >= 0 && mtrr_default <= 6 ? tn[mtrr_default] : "?", mtrr_count);
+        text(F_SMALL, w->x + 20, y, b, TEXT_DIM);
+        y += 18;
+        for (i = 0; i < mtrr_count; i++) {          /* two columns */
+            struct mtrr_entry *e = &mtrr_table[i];
+            snprintf(b, sizeof b, "%d: %X%08X  %u MB  %s", e->reg,
+                     (unsigned)(e->base >> 32), (unsigned)e->base,
+                     (unsigned)(e->size >> 20), e->type >= 0 && e->type <= 6 ? tn[e->type] : "?");
+            text(F_SMALL, w->x + 20 + (i % 2) * 240, y + (i / 2) * 18, b, TEXT);
+        }
+    }
 }
 
 void monitor_closed(int id)
@@ -97,7 +112,7 @@ void app_monitor(void)
     fb_type = memory_type(draw_fb_phys());
     last = shell_stats;
     last_ms = now_ms();
-    win_id = win_open("Monitor", 520, 256, monitor_draw, 0);
+    win_id = win_open("Monitor", 520, 256 + 18 + (mtrr_count + 1) / 2 * 18 + 8, monitor_draw, 0);
 }
 
 /* from the main loop: 1 when the window wants repainting */

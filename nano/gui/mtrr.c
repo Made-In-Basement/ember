@@ -26,6 +26,8 @@
 
 static int used_reg = -1;               /* the register we took, to give back */
 const char *fb_wc_note = "not attempted";   /* the outcome, for the monitor */
+struct mtrr_entry mtrr_table[16];           /* the firmware's table, for the monitor */
+int mtrr_count, mtrr_default = -1;
 static char note_buf[96];
 
 static void note(const char *s) { fb_wc_note = s; sys_log(s); }
@@ -110,7 +112,7 @@ int fb_write_combine(uint32_t base, uint32_t size)
 {
     uint64_t cap, def, addr_mask;
     uint32_t span;
-    int n, i, free_reg = -1, bits;
+    int n, i, free_reg = -1, bits, covering = -1;
     struct range r;
 
     note("framebuffer: looking at the MTRRs");
@@ -132,6 +134,8 @@ int fb_write_combine(uint32_t base, uint32_t size)
 
     sys_logf("mtrr: default type %d, %d variable registers, %d address bits",
              (int)(def & 0xFF), n, bits);
+    mtrr_default = (int)(def & 0xFF);
+    mtrr_count = 0;
 
     /* what covers it already?  an explicit uncacheable range would win */
     for (i = 0; i < n; i++) {
@@ -142,15 +146,24 @@ int fb_write_combine(uint32_t base, uint32_t size)
             sys_logf("mtrr %d: %08X%08X size %08X%08X type %d", i,
                      (uint32_t)((b & addr_mask) >> 32), (uint32_t)(b & addr_mask),
                      (uint32_t)(span_of >> 32), (uint32_t)span_of, (int)(b & 0xFF));
+            if (mtrr_count < 16) {
+                mtrr_table[mtrr_count].reg = i;
+                mtrr_table[mtrr_count].base = b & addr_mask;
+                mtrr_table[mtrr_count].size = span_of;
+                mtrr_table[mtrr_count].type = (int)(b & 0xFF);
+                mtrr_count++;
+            }
         }
-        if (((uint64_t)base & m & addr_mask) == (b & m & addr_mask)) {
-            int t = (int)(b & 0xFF);
-            if (t == TYPE_WC) { note("framebuffer: already write-combining"); return 0; }
-            /* an explicit range of any other type is the firmware's
-               decision, and uncacheable would win over ours anyway */
-            notef("framebuffer: MTRR %d already covers it (type %d); left alone", i, t);
-            return -1;
-        }
+        if (((uint64_t)base & m & addr_mask) == (b & m & addr_mask) && covering < 0)
+            covering = i;
+    }
+    if (covering >= 0) {
+        int t = (int)(rdmsr(MSR_PHYSBASE(covering)) & 0xFF);
+        if (t == TYPE_WC) { note("framebuffer: already write-combining"); return 0; }
+        /* an explicit range of any other type is the firmware's decision,
+           and uncacheable would win over ours anyway */
+        notef("framebuffer: MTRR %d already covers it (type %d); left alone", covering, t);
+        return -1;
     }
     if (free_reg < 0) { note("framebuffer: no MTRR free; left alone"); return -1; }
 

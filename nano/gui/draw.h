@@ -51,6 +51,9 @@ void inset(int x, int y, int w, int h, int r, uint32_t light, uint32_t dark);
 void clock_start(void);
 int  fb_write_combine(uint32_t base, uint32_t size);   /* mtrr.c */
 extern const char *fb_wc_note;
+struct mtrr_entry { int reg, type; uint64_t base, size; };
+extern struct mtrr_entry mtrr_table[16];
+extern int mtrr_count, mtrr_default;
 void fb_write_combine_undo(void);
 unsigned now_ms(void);
 unsigned now_us(void);
