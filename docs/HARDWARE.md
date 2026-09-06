@@ -87,3 +87,23 @@ pad answers with a zero length.  nano/gui/touch.c is the driver.
 The touchscreen (host 1, 4Ah) answered its descriptor too - Atmel
 03EB:8A10, input register 00D3h, reports up to 20 bytes - but has not yet
 been seen to report; nobody had touched it during its window.
+
+## The framebuffer's memory type (2026-09-06)
+
+The Monitor measured pushing pixels to the card at about 20 MB/s: 35.7 ms
+for a window-sized region at 1600x1200, against 9.4 ms of drawing.  The
+cause was the memory type.  The firmware's table (default UC, 10
+variable registers, 5 in use):
+
+    0: 000000000  16384 MB  WB     all RAM, remap included
+    1: 09D000000     16 MB  UC     holes for the devices, from TOLUD = 9D000000
+    2: 09E000000     32 MB  UC
+    3: 0A0000000    512 MB  UC
+    4: 0C0000000   1024 MB  UC
+
+The screen sits inside both the WB range and a UC hole; UC wins.  A WC
+range over WB is undefined, so nano/gui/mtrr.c redraws the table on
+start-up: RAM to 9D000000 as WB blocks 2 GB + 256 + 128 + 64 + 16 MB, the
+holes left to the default, and 8 MB of framebuffer WC.  Result, in the
+user's words: "WOW it's so fast now".  The firmware's table is restored on
+exit.
