@@ -119,6 +119,7 @@ void win_close(int id)
     int i, j;
     music_closed(id);
     monitor_closed(id);
+    write_closed(id);
     windows[id].open = 0;
     for (i = 0, j = 0; i < window_count; i++)
         if (z_order[i] != id) z_order[j++] = z_order[i];
@@ -206,10 +207,13 @@ static const struct desk_icon icons[] = {
     { "Music",      &art_music },
     { "Prompt",     &art_terminal },
     { "Calculator", &art_calc },
+    { "Write",      &art_note },
     { "Doom",       &art_chip },
     { "About",      &art_info },
 };
-#define ICON_COUNT 6
+#define ICON_COUNT 7
+/* which menu entry each icon stands for */
+static const int icon_menu[ICON_COUNT] = { 0, 1, 2, 3, 4, 5, 9 };
 #define ICON_W     96
 #define ICON_H     100
 #define ICON_X     28
@@ -385,12 +389,13 @@ void shell_run_menu(int item)
     case 1: app_music(); break;
     case 2: app_prompt(); break;
     case 3: app_calc(); break;
-    case 4: app_doom(); break;
-    case 5: app_monitor(); break;
-    case 6: osk_toggle(); break;                /* the caller repaints everything */
-    case 7: app_help(); break;
-    case 8: app_about(); break;
-    case 9: quit_requested = 1; break;
+    case 4: app_write(); break;
+    case 5: app_doom(); break;
+    case 6: app_monitor(); break;
+    case 7: osk_toggle(); break;                /* the caller repaints everything */
+    case 8: app_help(); break;
+    case 9: app_about(); break;
+    case 10: quit_requested = 1; break;
     default: break;
     }
 }
@@ -510,7 +515,7 @@ static void handle(struct event *e)
         if (id < 0) {
             int ic = icon_hit(e->a, e->b);
             if (ic >= 0) {
-                if (e->dbl && icon_sel == ic) shell_run_menu(ic);  /* a double-click opens */
+                if (e->dbl && icon_sel == ic) shell_run_menu(icon_menu[ic]);  /* a double-click opens */
                 else icon_sel = ic;
             } else {
                 icon_sel = -1;
@@ -573,7 +578,7 @@ static void handle(struct event *e)
                 break;
             }
             if (e->a == K_ENTER && icon_sel >= 0) {
-                shell_run_menu(icon_sel);
+                shell_run_menu(icon_menu[icon_sel]);
                 break;
             }
         }

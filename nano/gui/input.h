@@ -32,5 +32,11 @@ int  next_event(struct event *e);
 #define K_WIN_R 0x15C
 #define K_MENU  0x15D                   /* the menu key beside it */
 #define K_F1    0x3B
+#define K_HOME  0x147
+#define K_END   0x14F
+#define K_PGUP  0x149
+#define K_PGDN  0x151
+#define K_DEL   0x153
+#define K_SHIFT 0x200                   /* set on a key while Shift is held */
 
 #endif

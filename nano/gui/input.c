@@ -417,7 +417,7 @@ static void key_byte(uint8_t sc)
     if (sc == 0x2A || sc == 0x36) { shift_down = 1; e0 = 0; return; }
     if (!e0 && sc < 128)
         ch = (shift_down ? shifted : plain)[sc];
-    push(EV_KEY, sc | (e0 ? 0x100 : 0), ch);
+    push(EV_KEY, sc | (e0 ? 0x100 : 0) | (shift_down ? K_SHIFT : 0), ch);
     e0 = 0;
 }
 

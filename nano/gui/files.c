@@ -299,10 +299,12 @@ static void enter_list_row(void)
     char path[PATH_MAX];
     if (list_sel >= list_count) return;
     if (!list[list_sel].is_dir) {
-        if (shell_runnable(list[list_sel].name)) {
-            join(path, cur_path, list[list_sel].name);
+        const char *dot = strrchr(list[list_sel].name, '.');
+        join(path, cur_path, list[list_sel].name);
+        if (shell_runnable(list[list_sel].name))
             shell_launch(path);
-        }
+        else if (dot && (!strcmp(dot, ".TXT") || !strcmp(dot, ".EMW")))
+            app_write_open(path);
         return;
     }
     if (!strcmp(list[list_sel].name, "..")) {

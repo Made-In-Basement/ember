@@ -77,6 +77,9 @@ void music_display_rect(int *x, int *y, int *w, int *h);
 void music_closed(int id);
 void app_text(void);
 void app_doom(void);
+void app_write(void);                   /* the word processor */
+void app_write_open(const char *path);
+void write_closed(int id);
 
 /* the keyboard on the screen */
 extern int osk_visible;
