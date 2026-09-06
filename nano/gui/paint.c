@@ -332,12 +332,12 @@ static void save_canvas(void)
     char name[32];
     int n, h;
     for (n = 1; n < 1000; n++) {
-        snprintf(name, sizeof name, "\\PAINT%03d.BMP", n);
+        snprintf(name, sizeof name, "\\PAINT%03d.PNG", n);
         h = sys_open(name);
         if (h < 0) break;
         sys_close(h);
     }
-    if (bmp_write(name, canvas, cw, ch) == 0) snprintf(status, sizeof status, "saved %s", name);
+    if (png_write(name, canvas, cw, ch) == 0) snprintf(status, sizeof status, "saved %s", name);
     else strcpy(status, "could not save");
 }
 

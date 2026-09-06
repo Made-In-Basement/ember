@@ -164,6 +164,23 @@ uint32_t *wall_decode(const char *path)
     int fd, w, h, bpp, flip = 1, stride, y, x, colours = 0;
     uint32_t data_off;
 
+    {
+        const char *d = strrchr(path, '.');
+        if (d && !strcasecmp(d, ".PNG")) {
+            int pw, ph, x, y;
+            uint32_t *src = png_decode(path, &pw, &ph), *out;
+            if (!src) return 0;
+            out = malloc((size_t)scr_w * scr_h * 4);
+            if (!out) { free(src); return 0; }
+            for (y = 0; y < scr_h; y++) {
+                const uint32_t *srow = src + (size_t)((long)y * ph / scr_h) * pw;
+                uint32_t *orow = out + (size_t)y * scr_w;
+                for (x = 0; x < scr_w; x++) orow[x] = srow[(long)x * pw / scr_w];
+            }
+            free(src);
+            return out;
+        }
+    }
     if (is_jpeg(path)) {
         uint32_t *pic = malloc((size_t)scr_w * scr_h * 4);
         if (!pic) return 0;

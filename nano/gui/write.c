@@ -66,6 +66,7 @@ static int cur_face = F_NORMAL, cur_color;
 static int scroll_y;
 static int dragging, dirty;
 static char filename[64] = "\\NOTE.EMW";
+static int named;                       /* the file has a name of its own: Save need not ask */
 static int naming;                      /* 1 typing a name to open, 2 to save */
 static char name_buf[64];
 static struct cell *clip;
@@ -412,10 +413,10 @@ static int load_file(const char *name)
 
 /* ------------------------------------------------------------ the toolbar */
 struct tool { const char *label; int w; int id; };
-enum { T_NEW = 1, T_OPEN, T_SAVE, T_SMALL, T_NORMAL, T_BOLD, T_TITLE, T_COLOR, T_BULLET, T_CENTER,
+enum { T_NEW = 1, T_OPEN, T_SAVE, T_SAVEAS, T_SMALL, T_NORMAL, T_BOLD, T_TITLE, T_COLOR, T_BULLET, T_CENTER,
        T_CUT, T_COPY, T_PASTE, T_PAGE };
 static const struct tool tools[] = {
-    { "New", 46, T_NEW }, { "Open", 50, T_OPEN }, { "Save", 50, T_SAVE }, { 0, 10, 0 },
+    { "New", 46, T_NEW }, { "Open", 50, T_OPEN }, { "Save", 50, T_SAVE }, { "Save as", 66, T_SAVEAS }, { 0, 10, 0 },
     { "Small", 52, T_SMALL }, { "Text", 46, T_NORMAL }, { "Bold", 46, T_BOLD }, { "Title", 48, T_TITLE }, { 0, 10, 0 },
     { "", 22 * NCOLOURS + 4, T_COLOR }, { 0, 10, 0 },
     { "List", 46, T_BULLET }, { "Centre", 58, T_CENTER }, { 0, 10, 0 },
@@ -539,9 +540,16 @@ static void write_draw(struct window *w)
 static void do_tool(int id, int sub)
 {
     switch (id) {
-    case T_NEW:    doc_new(); strcpy(filename, "\\NOTE.EMW"); status[0] = 0; break;
+    case T_NEW:    doc_new(); strcpy(filename, "\\NOTE.EMW"); named = 0; status[0] = 0; break;
     case T_OPEN:   naming = 1; strncpy(name_buf, filename, sizeof name_buf - 1); break;
-    case T_SAVE:   naming = 2; strncpy(name_buf, filename, sizeof name_buf - 1); break;
+    case T_SAVE:
+        if (named) {                                /* straight back to where it came from */
+            if (save_file(filename) == 0) strcpy(status, "saved");
+            else strcpy(status, "could not save it");
+            break;
+        }
+        /* fall through: a new document needs a name */
+    case T_SAVEAS: naming = 2; strncpy(name_buf, filename, sizeof name_buf - 1); break;
     case T_SMALL:  apply_face(F_SMALL); break;
     case T_NORMAL: apply_face(F_NORMAL); break;
     case T_BOLD:   apply_face(F_BOLD); break;
@@ -561,10 +569,10 @@ static void finish_naming(void)
     char *p;
     for (p = name_buf; *p; p++) if (*p >= 'a' && *p <= 'z') *p -= 32;
     if (naming == 1) {
-        if (load_file(name_buf) == 0) { strcpy(filename, name_buf); strcpy(status, "opened"); }
+        if (load_file(name_buf) == 0) { strcpy(filename, name_buf); named = 1; strcpy(status, "opened"); }
         else strcpy(status, "could not open it");
     } else {
-        if (save_file(name_buf) == 0) { strcpy(filename, name_buf); strcpy(status, "saved"); }
+        if (save_file(name_buf) == 0) { strcpy(filename, name_buf); named = 1; strcpy(status, "saved"); }
         else strcpy(status, "could not save it");
     }
     naming = 0;
@@ -681,6 +689,7 @@ static int write_event(struct window *w, struct event *e)
         case K_ESC:   anchor = -1; return 1;
         case 0x3C:    do_tool(T_SAVE, 0); return 1;      /* F2: save */
         case 0x3D:    do_tool(T_OPEN, 0); return 1;      /* F3: open */
+        case 0x3E:    do_tool(T_SAVEAS, 0); return 1;    /* F4: save as */
         case 0x0E:                                      /* Backspace */
             if (!delete_selection() && cursor > 0) { cursor--; delete_cells(cursor, 1); }
             return 1;
@@ -716,7 +725,7 @@ void app_write(void)
 {
     if (ensure_document() != 0) return;
     if (win_id >= 0) return;
-    win_id = win_open("Write", 900, 560, write_draw, write_event);
+    win_id = win_open("Write", 960, 560, write_draw, write_event);
 }
 
 void app_write_open(const char *path)
@@ -724,9 +733,10 @@ void app_write_open(const char *path)
     if (ensure_document() != 0) return;
     if (load_file(path) == 0) {
         strncpy(filename, path, sizeof filename - 1);
+        named = 1;
         strcpy(status, "opened");
     } else {
         strcpy(status, "could not open it");
     }
-    if (win_id < 0) win_id = win_open("Write", 900, 560, write_draw, write_event);
+    if (win_id < 0) win_id = win_open("Write", 960, 560, write_draw, write_event);
 }

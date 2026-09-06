@@ -88,6 +88,8 @@ void notes_closed(int id);
 void app_screenshot(void);
 int  screenshot_save(char *out, int out_size);
 int  bmp_write(const char *name, const uint32_t *px, int w, int h);   /* 24-bit, top row first */
+int  png_write(const char *name, const uint32_t *px, int w, int h);   /* compressed; a tenth the size */
+uint32_t *png_decode(const char *path, int *w, int *h);              /* the picture at its own size */
 void app_paint(void);
 void paint_closed(int id);
 void shell_repaint(int x, int y, int w, int h);  /* a region an application changed */

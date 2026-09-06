@@ -66,12 +66,12 @@ int screenshot_save(char *out, int out_size)
 {
     int n, h;
     for (n = 1; n < 10000; n++) {
-        snprintf(out, out_size, "\\SHOT%04d.BMP", n);
+        snprintf(out, out_size, "\\SHOT%04d.PNG", n);
         h = sys_open(out);
         if (h < 0) break;
         sys_close(h);
     }
-    return bmp_write(out, back, scr_w, scr_h);
+    return png_write(out, back, scr_w, scr_h);
 }
 
 void app_screenshot(void)
