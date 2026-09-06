@@ -120,10 +120,19 @@ int fb_write_combine(uint32_t base, uint32_t size)
     bits = phys_bits();
     addr_mask = ((1ull << bits) - 1) & ~0xFFFull;
 
+    sys_logf("mtrr: default type %d, %d variable registers, %d address bits",
+             (int)(def & 0xFF), n, bits);
+
     /* what covers it already?  an explicit uncacheable range would win */
     for (i = 0; i < n; i++) {
         uint64_t b = rdmsr(MSR_PHYSBASE(i)), m = rdmsr(MSR_PHYSMASK(i));
         if (!(m & (1 << 11))) { if (free_reg < 0) free_reg = i; continue; }
+        {
+            uint64_t span_of = (~(m & addr_mask) & addr_mask) + 0x1000;   /* the range's size */
+            sys_logf("mtrr %d: %08X%08X size %08X%08X type %d", i,
+                     (uint32_t)((b & addr_mask) >> 32), (uint32_t)(b & addr_mask),
+                     (uint32_t)(span_of >> 32), (uint32_t)span_of, (int)(b & 0xFF));
+        }
         if (((uint64_t)base & m & addr_mask) == (b & m & addr_mask)) {
             int t = (int)(b & 0xFF);
             if (t == TYPE_WC) { sys_log("framebuffer: already write-combining"); return 0; }
