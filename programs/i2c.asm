@@ -94,8 +94,11 @@ start:
         call    print_hex32
         call    crlf
 
+        call    write_log
         call    chipset_dump
+        call    write_log
         call    scan_blocks
+        call    write_log
 
         ; ---- the touchpad: host 0, address 2Ch, descriptor at 20h ----
         mov     si, msg_touchpad
@@ -109,6 +112,7 @@ start:
         mov     word [dev_addr], 0x2C
         mov     word [desc_reg], 0x0020
         call    probe_device
+        call    write_log
 
         ; ---- the touchscreen: host 1, address 4Ah, descriptor at 0 ----
         mov     si, msg_touchscreen
@@ -312,7 +316,7 @@ scan_blocks:
         call    print_hex32
         call    crlf
 .next:  add     dword [cur_base], 0x1000
-        cmp     dword [cur_base], 0xFF000000
+        cmp     dword [cur_base], 0xFE400000
         jb      .page
         mov     si, msg_scan_end
         call    puts
@@ -836,14 +840,42 @@ write_log:
         mov     dx, log_buf
         mov     ah, 0x40
         int     0x21
+        pushf
+        push    ax
         mov     ah, 0x3E
         int     0x21
+        pop     ax
+        popf
+        jc      .short
+        cmp     ax, [log_len]
+        jne     .short
         mov     si, msg_saved
+        call    puts_screen
+        call    print_dec_screen
+        mov     si, msg_bytes
+        call    puts_screen
+        ret
+.short: mov     si, msg_short
+        call    puts_screen
+        call    print_dec_screen
+        mov     si, msg_bytes
         call    puts_screen
         ret
 .failed:
         mov     si, msg_nosave
         call    puts_screen
+        ret
+
+; print_dec_screen: AX in decimal, screen only
+print_dec_screen:
+        push    bx
+        mov     bx, [log_len]
+        push    bx
+        mov     word [log_len], LOG_MAX         ; so nothing lands in the log
+        call    print_dec
+        pop     bx
+        mov     [log_len], bx
+        pop     bx
         ret
 
 ; ---------------------------------------------------------------- printing
@@ -988,7 +1020,7 @@ msg_pci_sio:    db "PCI 00:15.0-7 (Serial IO) vendor/device: ", 0
 msg_pci_lpc:    db "PCI 00:1F.0 (LPC): ", 0
 msg_rcba:       db "  RCBA ", 0
 msg_fd:         db "  GCS/FD/FD2: ", 0
-msg_scan:       db "Sweeping FE000000-FEFFFFFF for I2C blocks...", 13, 10, 0
+msg_scan:       db "Sweeping FE000000-FE3FFFFF for I2C blocks...", 13, 10, 0
 msg_found:      db "  I2C block at ", 0
 msg_live:       db "  something answers at ", 0
 msg_scan_end:   db "  pages answering: ", 0
@@ -1029,7 +1061,9 @@ msg_poll_sum:   db "  reports ", 0
 msg_poll_sum2:  db ", empty reads ", 0
 msg_poll_sum3:  db ", failed reads ", 0
 msg_done:       db 13, 10, "Done.", 13, 10, 0
-msg_saved:      db "Written to C:\I2C.TXT", 13, 10, 0
+msg_saved:      db "Written to C:\I2C.TXT, ", 0
+msg_short:      db "C:\I2C.TXT: the write fell short, ", 0
+msg_bytes:      db " bytes", 13, 10, 0
 msg_nosave:     db "Could not write C:\I2C.TXT", 13, 10, 0
 log_name:       db "\I2C.TXT", 0
 
