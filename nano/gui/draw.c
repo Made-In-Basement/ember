@@ -79,6 +79,7 @@ int draw_open(int want_w, int want_h)
     fb_pitch = m.pitch;
     fb_bpp = m.bpp;
     fb = (uint8_t *)m.framebuffer;
+    fb_write_combine(m.framebuffer, (uint32_t)m.pitch * m.height);
     back = malloc((size_t)scr_w * scr_h * 4);
     if (!back) {
         sys_set_video_mode(3);
@@ -96,6 +97,7 @@ int draw_open(int want_w, int want_h)
 
 void draw_close(void)
 {
+    fb_write_combine_undo();
     sys_set_video_mode(3);
 }
 
