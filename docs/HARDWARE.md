@@ -56,6 +56,19 @@ receiver, which carries a keyboard and a mouse on one USB device.  That is
 a harder thing to impersonate than a plain mouse and may be why the
 impersonation misbehaves; a plain wired USB mouse is a cheap experiment.
 
-Still wanted from the DSDT: each touch device's I2C slave address and which
-host it hangs off (its I2cSerialBus descriptor), the HID descriptor
-register from its _DSM, and the SSCN/FMCN clock counts for the hosts.
+From the DSDT (dsdt.reg exported by Windows, decoded here):
+
+    touchpad     SYNA2B22  on \_SB.PCI0.I2C0 (FE103000)  address 2Ch  400 kHz  HID descriptor at register 0020h
+    touchscreen  ATML1000  on \_SB.PCI0.I2C1 (FE105000)  address 4Ah  400 kHz  HID descriptor at register 0000h
+    (ATML7000 is an alternative touchscreen at the same address; ATML2000 at 26h is its boot bridge)
+
+The hosts' _PS0 (method LPD0) powers one up by clearing bits 0-1 of the
+dword at its private area + 84h, i.e. FE103884h / FE105884h; _PS3 sets
+them to 3.  The bus timing counts (SSCN/FMCN) are in a secondary table
+that was not exported; the probe uses the textbook values for a 100 MHz
+clock at standard speed.
+
+`I2C.COM` (programs/i2c.asm) is the probe built from these facts: it
+checks each host's identity register (44570140h), powers it up if need
+be, reads the HID descriptor from each device, then switches the device
+on, resets it and lists the reports it gives while touched.
