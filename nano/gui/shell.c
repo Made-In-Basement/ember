@@ -38,6 +38,7 @@ static int z_order[MAX_WINDOWS];
 static int focused = -1;
 
 static int drag_win = -1, drag_dx, drag_dy;
+static int resize_win = -1;
 #define drag_active (drag_win >= 0)
 static int quit_requested;
 struct shell_stats shell_stats;
@@ -128,6 +129,7 @@ void win_close(int id)
     clock_closed(id);
     calendar_closed(id);
     notes_closed(id);
+    paint_closed(id);
     windows[id].open = 0;
     for (i = 0, j = 0; i < window_count; i++)
         if (z_order[i] != id) z_order[j++] = z_order[i];
@@ -150,6 +152,7 @@ static int window_hit(int x, int y)
     int i;
     for (i = window_count - 1; i >= 0; i--) {
         struct window *w = &windows[z_order[i]];
+        if (w->minimized) continue;
         if (x >= w->x - 2 && x < w->x + w->w + 2 &&
             y >= w->y - TITLE_H && y < w->y + w->h + 2)
             return z_order[i];
@@ -183,7 +186,7 @@ static void draw_window(struct window *w, int is_focused, int with_backdrop)
     text(F_BOLD, tx + 14, ty + (TITLE_H - text_height(F_BOLD)) / 2,
          w->title, is_focused ? AMBER_HOT : TEXT_DIM);
 
-    /* the close mark */
+    /* the controls: close, maximize, minimize */
     {
         int cxp = tx + tw - 20, cyp = ty + TITLE_H / 2, i;
         uint32_t c = is_focused ? AMBER : TEXT_DIM;
@@ -193,6 +196,11 @@ static void draw_window(struct window *w, int is_focused, int with_backdrop)
             pixel_blend(cxp + i + 1, cyp + i, c, 90);
             pixel_blend(cxp + i + 1, cyp - i, c, 90);
         }
+        if (!w->fixed) {
+            round_frame(cxp - 34, cyp - 5, 10, 10, 1, c);            /* maximize: a box */
+            if (w->maxed) round_frame(cxp - 31, cyp - 8, 10, 10, 1, c);
+        }
+        fill(cxp - 63, cyp + 3, 10, 2, c);                           /* minimize: a line */
     }
 
     /* the body: a face that catches light at the top and falls away */
@@ -205,6 +213,11 @@ static void draw_window(struct window *w, int is_focused, int with_backdrop)
         clip_shrink(w->x, w->y, w->w, w->h);
         w->draw(w);
         clip_set(ox, oy, ow, oh);
+    }
+    if (!w->fixed) {                                                 /* the grip */
+        int gx = w->x + w->w - 4, gy = w->y + w->h - 4, i;
+        for (i = 0; i < 3; i++)
+            line(gx - 4 - i * 4, gy, gx, gy - 4 - i * 4, 1, is_focused ? AMBER_DIM : EDGE_LIT);
     }
 }
 
@@ -297,7 +310,7 @@ static void draw_bar(void)
             fill(bx, 5, 3, BAR_H - 11, AMBER);
         }
         text_clipped(F_SMALL, bx + 12, (BAR_H - text_height(F_SMALL)) / 2,
-                     bw - 20, w->title, is_focused ? AMBER_HOT : TEXT_DIM);
+                     bw - 20, w->title, is_focused ? AMBER_HOT : w->minimized ? 0x5A4E40 : TEXT_DIM);
         bx += bw + 8;
     }
 
@@ -383,7 +396,38 @@ static void draw_cursor(int x, int y)
 /* a window's whole footprint: frame, title, shadow and halo */
 static int window_shows(struct window *w)
 {
-    return clip_intersects(w->x - 8, w->y - TITLE_H - 8, w->w + 32, w->h + TITLE_H + 40);
+    return !w->minimized && clip_intersects(w->x - 8, w->y - TITLE_H - 8, w->w + 32, w->h + TITLE_H + 40);
+}
+
+/* the frame's controls: minimize, maximize and close, right to left, and
+   a grip at the bottom-right corner to resize by */
+static void set_maximized(struct window *w, int on)
+{
+    if (w->fixed) return;
+    if (on && !w->maxed) {
+        w->sx = w->x; w->sy = w->y; w->sw = w->w; w->sh = w->h;
+        w->x = 6;
+        w->y = BAR_H + TITLE_H + 4;
+        w->w = scr_w - 12;
+        w->h = scr_h - BAR_H - TITLE_H - 10;
+        w->maxed = 1;
+    } else if (!on && w->maxed) {
+        w->x = w->sx; w->y = w->sy; w->w = w->sw; w->h = w->sh;
+        w->maxed = 0;
+    }
+    damage_all();
+}
+
+static void set_minimized(int id, int on)
+{
+    windows[id].minimized = on;
+    if (on && focused == id) {
+        int i;
+        focused = -1;
+        for (i = window_count - 1; i >= 0; i--)
+            if (!windows[z_order[i]].minimized) { focused = z_order[i]; break; }
+    }
+    damage_all();
 }
 
 static void draw_all(void)
@@ -426,6 +470,7 @@ void shell_run_menu(int action)
     case A_CALENDAR: app_calendar(); break;
     case A_NOTES:    app_notes(); break;
     case A_SHOT:     app_screenshot(); break;
+    case A_PAINT:    app_paint(); break;
     default: break;
     }
 }
@@ -486,6 +531,9 @@ static void need_window(struct window *w, int x, int y)
     need_rect(x - 12, y - TITLE_H - 12, w->w + 48, w->h + TITLE_H + 56);
 }
 
+/* an application asking for a region to be repainted, from its event handler */
+void shell_repaint(int x, int y, int w, int h) { need_rect(x, y, w, h); }
+
 static void need_crystal(void)
 {
     int x, y, w, h;
@@ -536,7 +584,12 @@ static void handle(struct event *e)
         if (e->b < BAR_H) {                             /* a window button */
             int bx = 18, i;
             for (i = 0; i < window_count; i++) {
-                if (e->a >= bx && e->a < bx + 160) { raise_window(z_order[i]); break; }
+                if (e->a >= bx && e->a < bx + 160) {
+                    int id2 = z_order[i];
+                    if (windows[id2].minimized) set_minimized(id2, 0);
+                    raise_window(id2);
+                    break;
+                }
                 bx += 168;
             }
             break;
@@ -557,10 +610,17 @@ static void handle(struct event *e)
         {
             struct window *w = &windows[id];
             if (e->b < w->y) {
-                if (e->a > w->x + w->w - 30) { win_close(id); break; }
+                int from_right = w->x + w->w - e->a;
+                if (from_right < 30) { win_close(id); break; }
+                if (from_right < 60 && !w->fixed) { set_maximized(w, !w->maxed); break; }
+                if (from_right < 90) { set_minimized(id, 1); break; }
+                if (e->dbl && !w->fixed) { set_maximized(w, !w->maxed); break; }
+                if (w->maxed) break;                                 /* a maximized window stays put */
                 drag_win = id;
                 drag_dx = e->a - w->x;
                 drag_dy = e->b - w->y;
+            } else if (!w->fixed && !w->maxed && e->a > w->x + w->w - 20 && e->b > w->y + w->h - 20) {
+                resize_win = id;                                     /* the grip */
             } else if (w->event) {
                 struct event local = *e;
                 local.a -= w->x;
@@ -571,8 +631,20 @@ static void handle(struct event *e)
         break;
     case EV_MOUSE_UP:
         drag_win = -1;
+        resize_win = -1;
         break;
     case EV_MOUSE_MOVE:
+        if (resize_win >= 0) {
+            struct window *w = &windows[resize_win];
+            int nw = e->a - w->x, nh = e->b - w->y;
+            if (nw < 220) nw = 220;
+            if (nh < 120) nh = 120;
+            need_window(w, w->x, w->y);
+            w->w = nw;
+            w->h = nh;
+            need_window(w, w->x, w->y);
+            break;
+        }
         if (drag_win >= 0) {
             struct window *w = &windows[drag_win];
             int ox = w->x, oy = w->y;

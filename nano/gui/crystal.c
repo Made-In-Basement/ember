@@ -50,7 +50,8 @@ static const struct entry main_menu[] = {
 };
 static const struct entry programs_menu[] = {
     { "Back", -1, 0, 0 }, { "Prompt", A_PROMPT, -1, &art_terminal }, { "Calculator", A_CALC, -1, &art_calc },
-    { "Pictures", A_VIEWER, -1, &art_paint }, { "Clock", A_CLOCK, -1, &art_clock },
+    { "Pictures", A_VIEWER, -1, &art_globe }, { "Paint", A_PAINT, -1, &art_paint },
+    { "Clock", A_CLOCK, -1, &art_clock },
     { "Calendar", A_CALENDAR, -1, &art_book }, { "Notes", A_NOTES, -1, &art_note },
     { "Screenshot", A_SHOT, -1, &art_computer }, { "Doom", A_DOOM, -1, &art_chip }, { 0, 0, 0, 0 }
 };

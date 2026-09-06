@@ -14,6 +14,9 @@ struct window {
     int sel, top, count, scroll;
     void *data;
     char path[96];
+    /* the frame's own business */
+    int minimized, maxed, fixed;        /* fixed: neither resized nor maximized */
+    int sx, sy, sw, sh;                 /* where it was before being maximized */
 };
 
 int  win_open(const char *title, int w, int h, void (*draw)(struct window *),
@@ -84,6 +87,10 @@ void app_notes_new(void);
 void notes_closed(int id);
 void app_screenshot(void);
 int  screenshot_save(char *out, int out_size);
+int  bmp_write(const char *name, const uint32_t *px, int w, int h);   /* 24-bit, top row first */
+void app_paint(void);
+void paint_closed(int id);
+void shell_repaint(int x, int y, int w, int h);  /* a region an application changed */
 void app_calc(void);
 void app_prompt(void);
 void app_about(void);
