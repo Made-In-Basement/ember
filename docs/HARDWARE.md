@@ -32,3 +32,30 @@ lets the panel stretch it.
 Mouse: a USB mouse impersonated as PS/2 by the firmware.  Reported as
 moving in random directions with phantom right clicks under the desktop's
 first drivers; `MOUSE.TXT` will say why.
+
+## The same laptop, seen from Windows 11 (2026-09-05)
+
+`Get-PnpDevice` and the allocated resources settle how the input devices are
+attached:
+
+    touchpad      ACPI\SYNA2B22   Synaptics, HID over I2C      interrupt line 26
+    touchscreen   ACPI\ATML1000   Atmel maXTouch, HID over I2C  interrupt line 27
+    I2C host 0    ACPI\INT3432    Intel Serial IO (9CE1)  memory FE103000  IRQ 7
+    I2C host 1    ACPI\INT3433    Intel Serial IO (9CE2)  memory FE105000  IRQ 7
+    GPIO          ACPI\INT3437    Intel Serial IO GPIO    port 0800
+    mouse         USB\VID_046D&PID_C52B  a Logitech Unifying receiver
+
+So both touch devices are HID-over-I2C behind Intel's LPSS controllers,
+which are DesignWare I2C blocks at fixed memory addresses.  Those are
+reachable from the kernel the same way the HD Audio registers are (unreal
+mode).  The interrupt lines the touch devices use are GPIO pins; a driver
+that polls needs none of that.
+
+The "PS/2 mouse" the firmware impersonates is a Logitech Unifying
+receiver, which carries a keyboard and a mouse on one USB device.  That is
+a harder thing to impersonate than a plain mouse and may be why the
+impersonation misbehaves; a plain wired USB mouse is a cheap experiment.
+
+Still wanted from the DSDT: each touch device's I2C slave address and which
+host it hangs off (its I2cSerialBus descriptor), the HID descriptor
+register from its _DSM, and the SSCN/FMCN clock counts for the hosts.
