@@ -55,7 +55,17 @@ DW_IDENT        equ 0x44570140
 PRV_CLOCK       equ 0x800                       ; bit 0: clock on
 PRV_RESETS      equ 0x804                       ; bits 0-1 set: out of reset
 PRV_GENERAL     equ 0x808
-PRV_POWER       equ 0x884                       ; bits 0-1: 0 = on, 3 = off
+
+; ---- the page after the block: a copy of its PCI configuration space ----
+; A sleeping device decodes nothing but this page, and it is here that the
+; firmware's own power-on method writes: bits 0-1 of the power register
+; (the PCI PMCSR) are the power state, 0 awake and 3 asleep.
+CFG_PAGE        equ 0x1000
+CFG_VENDOR      equ 0x1000
+CFG_COMMAND     equ 0x1004
+CFG_BAR0        equ 0x1010
+CFG_BAR1        equ 0x1014
+CFG_POWER       equ 0x1084
 
 CMD_READ        equ 0x100
 CMD_STOP        equ 0x200
@@ -302,6 +312,34 @@ scan_blocks:
         call    ic_rd
         cmp     eax, 0xFFFFFFFF
         je      .next
+        cmp     ax, 0x8086                      ; a configuration page: Intel's
+        jne     .live
+        push    eax
+        shr     eax, 16
+        cmp     ax, 0x9CE1                      ; I2C host 0
+        je      .cfg_i2c
+        cmp     ax, 0x9CE2                      ; I2C host 1
+        jne     .not_cfg
+.cfg_i2c:
+        mov     si, msg_cfgpage
+        call    puts
+        call    print_hex16
+        mov     si, msg_cfgpage2
+        call    puts
+        mov     bx, 0x10                        ; its BAR0: where the block is
+        call    ic_rd
+        and     eax, 0xFFFFF000
+        call    print_hex32
+        call    crlf
+        mov     bx, [found_n]
+        cmp     bx, 4
+        jae     .not_cfg
+        shl     bx, 2
+        mov     [found_i2c+bx], eax
+        inc     word [found_n]
+.not_cfg:
+        pop     eax
+.live:
         inc     word [live_n]
         cmp     word [live_n], 24
         ja      .next
@@ -367,9 +405,30 @@ host_dump:
         mov     bx, PRV_GENERAL
         call    ic_rd
         call    print_hex32
+        call    crlf
+        mov     si, msg_cfg
+        call    puts
+        mov     bx, CFG_VENDOR
+        call    ic_rd
+        call    print_hex32
         mov     si, msg_sp
         call    puts
-        mov     bx, PRV_POWER
+        mov     bx, CFG_COMMAND
+        call    ic_rd
+        call    print_hex32
+        mov     si, msg_sp
+        call    puts
+        mov     bx, CFG_BAR0
+        call    ic_rd
+        call    print_hex32
+        mov     si, msg_sp
+        call    puts
+        mov     bx, CFG_BAR1
+        call    ic_rd
+        call    print_hex32
+        mov     si, msg_sp
+        call    puts
+        mov     bx, CFG_POWER
         call    ic_rd
         call    print_hex32
         call    crlf
@@ -398,12 +457,21 @@ host_dump:
         call    crlf
         ret
 
-; host_power_on: what the firmware's _PS0 does (clear the two power bits),
-;   then take the block out of reset and turn its clock on
+; host_power_on: what the firmware's _PS0 does (clear the two power bits in
+;   the configuration page), make sure memory decoding is on, then take
+;   the block out of reset and turn its clock on
 host_power_on:
-        mov     bx, PRV_POWER
+        mov     bx, CFG_POWER
         call    ic_rd
+        cmp     eax, 0xFFFFFFFF                 ; no configuration page either
+        je      .done
         and     eax, 0xFFFFFFFC
+        call    ic_wr
+        mov     bx, 1                           ; the wake-up takes a moment
+        call    wait_ticks
+        mov     bx, CFG_COMMAND
+        call    ic_rd
+        or      eax, 0x06                       ; memory space, bus master
         call    ic_wr
         mov     bx, PRV_RESETS
         mov     eax, 3
@@ -415,7 +483,7 @@ host_power_on:
         ; give it a moment
         mov     bx, 2
         call    wait_ticks
-        ret
+.done:  ret
 
 ; host_setup: standard speed (100 kHz) from a 100 MHz clock, master only,
 ;   restarts allowed, interrupts unused (we poll)
@@ -1022,6 +1090,8 @@ msg_rcba:       db "  RCBA ", 0
 msg_fd:         db "  GCS/FD/FD2: ", 0
 msg_scan:       db "Sweeping FE000000-FE3FFFFF for I2C blocks...", 13, 10, 0
 msg_found:      db "  I2C block at ", 0
+msg_cfgpage:    db "  configuration page of device ", 0
+msg_cfgpage2:   db ", whose block is at ", 0
 msg_live:       db "  something answers at ", 0
 msg_scan_end:   db "  pages answering: ", 0
 msg_scan_end2:  db ", I2C blocks: ", 0
@@ -1031,7 +1101,8 @@ msg_host_at:    db "  host at ", 0
 msg_ident:      db ": identity ", 0
 msg_version:    db " version ", 0
 msg_param:      db " param ", 0
-msg_prv:        db "  private: clock/resets/general/power ", 0
+msg_prv:        db "  private: clock/resets/general ", 0
+msg_cfg:        db "  config page: vendor/command/bar0/bar1/power ", 0
 msg_sp:         db " ", 0
 msg_powering:   db "  not answering: trying the power-on sequence", 13, 10, 0
 msg_no_host:    db "  no controller reachable here", 13, 10, 0

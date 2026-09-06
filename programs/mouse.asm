@@ -222,9 +222,11 @@ start:
         int     0x15
         call    show_callbacks
 .bios_done:
-        mov     si, msg_done
-        call    puts
-        call    write_log
+        ; No file write after this point: once the firmware's mouse
+        ; services have been on, writing to the stick froze one machine.
+        ; The file already holds stages 1 and 2; this stage is for the eye.
+        mov     si, msg_done_screen
+        call    puts_screen
         mov     ax, 0x4C00
         int     0x21
 
@@ -723,6 +725,7 @@ msg_cb2:      db 13, 10, "   status dx dy", 13, 10, 0
 msg_cbrow:    db "   ", 0
 msg_sp:       db " ", 0
 msg_done:     db "Done.", 13, 10, 0
+msg_done_screen: db "Done.  Stages 1 and 2 are in C:\MOUSE.TXT; photograph the screen for stage 3.", 13, 10, 0
 msg_saved:    db "Written to C:\MOUSE.TXT", 13, 10, 0
 msg_nosave:   db "Could not write C:\MOUSE.TXT", 13, 10, 0
 log_name:     db "\MOUSE.TXT", 0
