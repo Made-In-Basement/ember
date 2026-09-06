@@ -134,6 +134,7 @@ void draw_present(void)
     if (dmg_y1 > scr_h) dmg_y1 = scr_h;
     if (dmg_x0 >= dmg_x1 || dmg_y0 >= dmg_y1)
         return;
+    draw_present_bytes += (unsigned long)(dmg_x1 - dmg_x0) * (dmg_y1 - dmg_y0) * (fb_bpp / 8);
     for (y = dmg_y0; y < dmg_y1; y++) {
         const uint32_t *src = back + (size_t)y * scr_w + dmg_x0;
         uint8_t *dst = fb + (size_t)y * fb_pitch;
@@ -229,6 +230,7 @@ void fill(int x, int y, int w, int h, uint32_t c)
 
 void fill_alpha(int x, int y, int w, int h, uint32_t c, int alpha)
 {
+    if (!clip_intersects(x, y, w, h)) return;   /* nothing of it shows */
     int yy, xx;
     int x0 = x < cx0 ? cx0 : x, y0 = y < cy0 ? cy0 : y;
     int x1 = x + w > cx1 ? cx1 : x + w, y1 = y + h > cy1 ? cy1 : y + h;
@@ -243,6 +245,7 @@ void fill_alpha(int x, int y, int w, int h, uint32_t c, int alpha)
 
 void vgradient(int x, int y, int w, int h, uint32_t top, uint32_t bottom)
 {
+    if (!clip_intersects(x, y, w, h)) return;   /* nothing of it shows */
     int yy;
     if (h <= 0) return;
     for (yy = 0; yy < h; yy++)
@@ -251,6 +254,7 @@ void vgradient(int x, int y, int w, int h, uint32_t top, uint32_t bottom)
 
 void hgradient(int x, int y, int w, int h, uint32_t left, uint32_t right)
 {
+    if (!clip_intersects(x, y, w, h)) return;   /* nothing of it shows */
     int xx;
     if (w <= 0) return;
     for (xx = 0; xx < w; xx++)
@@ -279,6 +283,7 @@ static void corner_span(int cx, int cy, int r, int y, int *from, int *to)
 
 void round_fill(int x, int y, int w, int h, int r, uint32_t c)
 {
+    if (!clip_intersects(x, y, w, h)) return;   /* nothing of it shows */
     int yy;
     if (r * 2 > w) r = w / 2;
     if (r * 2 > h) r = h / 2;
@@ -295,6 +300,7 @@ void round_fill(int x, int y, int w, int h, int r, uint32_t c)
 
 void round_frame(int x, int y, int w, int h, int r, uint32_t c)
 {
+    if (!clip_intersects(x, y, w, h)) return;   /* nothing of it shows */
     int yy;
     if (r * 2 > w) r = w / 2;
     if (r * 2 > h) r = h / 2;
@@ -319,6 +325,7 @@ void round_frame_alpha(int x, int y, int w, int h, int r, uint32_t c, int alpha)
 /* A soft edge under a window, so it lifts off the desktop. */
 void shadow(int x, int y, int w, int h, int r, int spread)
 {
+    if (!clip_intersects(x - spread, y - spread, w + 2 * spread, h + 2 * spread)) return;   /* nothing of it shows */
     int i;
     for (i = spread; i >= 1; i--) {
         int a = 40 / i;
@@ -329,6 +336,7 @@ void shadow(int x, int y, int w, int h, int r, int spread)
 
 void round_fill_alpha(int x, int y, int w, int h, int r, uint32_t c, int alpha)
 {
+    if (!clip_intersects(x, y, w, h)) return;   /* nothing of it shows */
     int yy;
     if (r * 2 > w) r = w / 2;
     if (r * 2 > h) r = h / 2;
@@ -388,6 +396,7 @@ void poly_fill(const int *pts, int n, uint32_t c)
    a glow rather than as a stack of rectangles. */
 void soft_ellipse(int cx, int cy, int rx, int ry, uint32_t c, int max_alpha)
 {
+    if (!clip_intersects(cx - rx, cy - ry, 2 * rx, 2 * ry)) return;   /* nothing of it shows */
     int x, y;
     int x0 = cx - rx, x1 = cx + rx, y0 = cy - ry, y1 = cy + ry;
     if (rx <= 0 || ry <= 0) return;
@@ -416,6 +425,7 @@ void soft_ellipse(int cx, int cy, int rx, int ry, uint32_t c, int max_alpha)
 /* a halo, for whatever has the focus */
 void glow(int x, int y, int w, int h, int r, uint32_t c, int rings)
 {
+    if (!clip_intersects(x - rings, y - rings, w + 2 * rings, h + 2 * rings)) return;   /* nothing of it shows */
     int i;
     for (i = rings; i >= 1; i--) {
         int a = 60 / (i + 1);
@@ -428,6 +438,7 @@ void glow(int x, int y, int w, int h, int r, uint32_t c, int rings)
 
 void round_frame_alpha(int x, int y, int w, int h, int r, uint32_t c, int alpha)
 {
+    if (!clip_intersects(x, y, w, h)) return;   /* nothing of it shows */
     int yy;
     if (r * 2 > w) r = w / 2;
     if (r * 2 > h) r = h / 2;
@@ -486,6 +497,15 @@ unsigned now_ms(void)
 {
     return (unsigned)((rdtsc() - tsc_base) / (tsc_hz / 1000u));
 }
+
+unsigned now_us(void)
+{
+    return (unsigned)((rdtsc() - tsc_base) / (tsc_hz / 1000000u));
+}
+
+uint32_t draw_fb_phys(void) { return (uint32_t)fb; }
+int      draw_fb_bpp(void)  { return fb_bpp; }
+unsigned long draw_present_bytes;       /* pushed to the card so far */
 
 /* ---------------------------------------------------------------- pictures */
 /* A column range of a picture, blended over what is already there.  Alpha

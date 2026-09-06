@@ -39,6 +39,7 @@ static int focused = -1;
 static int drag_win = -1, drag_dx, drag_dy;
 #define drag_active (drag_win >= 0)
 static int quit_requested;
+struct shell_stats shell_stats;
 static int want_width = 1920, want_height = 1200;
 
 /* ---------------------------------------------------------------- windows */
@@ -74,6 +75,7 @@ void win_close(int id)
 {
     int i, j;
     music_closed(id);
+    monitor_closed(id);
     windows[id].open = 0;
     for (i = 0, j = 0; i < window_count; i++)
         if (z_order[i] != id) z_order[j++] = z_order[i];
@@ -335,9 +337,10 @@ void shell_run_menu(int item)
     case 2: app_prompt(); break;
     case 3: app_calc(); break;
     case 4: app_doom(); break;
-    case 5: app_help(); break;
-    case 6: app_about(); break;
-    case 7: quit_requested = 1; break;
+    case 5: app_monitor(); break;
+    case 6: app_help(); break;
+    case 7: app_about(); break;
+    case 8: quit_requested = 1; break;
     default: break;
     }
 }
@@ -583,13 +586,20 @@ int main(int argc, char **argv)
             last_clock = now_ms();
             need(REDRAW_ALL);
         }
+        shell_stats.loops++;
         if (music_tick()) {                             /* its display moved */
-            int id = music_window();
+            int x, y, w, h;
+            music_display_rect(&x, &y, &w, &h);
+            need_rect(x, y, w, h);
+        }
+        if (monitor_tick()) {
+            int id = monitor_window();
             if (id >= 0) need_window(&windows[id], windows[id].x, windows[id].y);
         }
         moved = (mouse_x != last_x || mouse_y != last_y);
 
         if (redraw_level != REDRAW_NONE || moved) {
+            unsigned t_draw = now_us(), t_present;
             cursor_lift();
             if (redraw_level == REDRAW_RECT) {
                 /* One region: everything is drawn, but only within it,
@@ -609,7 +619,12 @@ int main(int argc, char **argv)
             draw_cursor(mouse_x, mouse_y);
             last_x = mouse_x;
             last_y = mouse_y;
+            t_present = now_us();
             draw_present();
+            shell_stats.frames++;
+            shell_stats.draw_us += t_present - t_draw;
+            shell_stats.present_us += now_us() - t_present;
+            shell_stats.present_bytes = draw_present_bytes;
             /* A full repaint at this size takes long enough that the sound
                chip can run dry while it happens; top the ring up again the
                moment the frame is out. */
@@ -618,7 +633,9 @@ int main(int argc, char **argv)
             /* Nothing to draw and nothing to feed: wait for the next
                interrupt rather than spinning.  With sound playing there is
                always the ring to keep ahead of, so we stay awake. */
+            unsigned t_idle = now_us();
             __asm__ volatile("hlt");
+            shell_stats.idle_us += now_us() - t_idle;
         }
     }
 

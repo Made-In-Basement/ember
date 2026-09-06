@@ -50,6 +50,10 @@ void inset(int x, int y, int w, int h, int r, uint32_t light, uint32_t dark);
 /* a clock for animation, in milliseconds since the shell started */
 void clock_start(void);
 unsigned now_ms(void);
+unsigned now_us(void);
+uint32_t draw_fb_phys(void);
+int      draw_fb_bpp(void);
+extern unsigned long draw_present_bytes;
 
 /* text */
 enum { F_SMALL, F_NORMAL, F_BOLD, F_TITLE, F_CLOCK, F_COUNT };

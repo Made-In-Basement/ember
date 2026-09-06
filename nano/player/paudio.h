@@ -18,6 +18,7 @@ extern volatile int audio_scope_pos;
 
 extern int  audio_bitrate, audio_rate, audio_channels;
 extern int  audio_peak_l, audio_peak_r;
+int  audio_ring_fill(void);            /* percent of the ring ahead of the chip */
 extern int  audio_volume;               /* 0..10 */
 extern long audio_seconds, audio_total_seconds;
 

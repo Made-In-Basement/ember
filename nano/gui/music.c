@@ -419,8 +419,9 @@ int music_tick(void)
             spectrum();
             changed = 1;
         }
-    } else {
+    } else if (now_ms() - last_fft > 33) {         /* the bars settle at the same pace */
         int i, any = 0;
+        last_fft = now_ms();
         for (i = 0; i < FFT_BARS; i++) {
             if (bars[i] > 0) { bars[i] -= 4; if (bars[i] < 0) bars[i] = 0; any = 1; }
             if (caps[i] > 0) { caps[i] -= 3; if (caps[i] < 0) caps[i] = 0; any = 1; }
@@ -428,6 +429,16 @@ int music_tick(void)
         changed = any;
     }
     return changed;
+}
+
+/* the display alone: what a tick of the analyser changes */
+void music_display_rect(int *x, int *y, int *w, int *h)
+{
+    struct window *win = win_at(win_id);
+    *x = win->x + DISP_X;
+    *y = win->y + DISP_Y;
+    *w = win->w - DISP_X * 2;
+    *h = DISP_H;
 }
 
 int music_window(void) { return win_id; }

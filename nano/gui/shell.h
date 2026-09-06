@@ -71,8 +71,21 @@ int  music_tick(void);                  /* keeps the sound fed; 1 = redraw */
 void music_chime(void);                 /* the sound it makes on opening */
 int  music_active(void);                /* sound is playing: do not idle */
 int  music_window(void);                /* its window, or -1 */
+void music_display_rect(int *x, int *y, int *w, int *h);
 void music_closed(int id);
 void app_text(void);
 void app_doom(void);
+
+/* where the time goes, counted by the main loop for the monitor */
+struct shell_stats {
+    unsigned frames, loops;
+    unsigned draw_us, present_us, idle_us;
+    unsigned long present_bytes;
+};
+extern struct shell_stats shell_stats;
+void app_monitor(void);
+int  monitor_tick(void);                /* 1 = its window wants repainting */
+int  monitor_window(void);
+void monitor_closed(int id);
 
 #endif

@@ -222,6 +222,16 @@ void audio_silence(void)
 }
 
 /* Keep the ring fed.  Returns 0 when the track has finished. */
+/* how far ahead of the chip we are, as a percentage of the ring */
+int audio_ring_fill(void)
+{
+    unsigned hw, ahead;
+    if (!audio_ready || !ring_frames) return 0;
+    hw = (*lpib / 4) % ring_frames;
+    ahead = (wpos - hw + ring_frames) % ring_frames;
+    return (int)(ahead * 100 / ring_frames);
+}
+
 int audio_pump(void)
 {
     unsigned hw, ahead, room, w;
