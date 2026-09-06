@@ -316,7 +316,7 @@ static int save_file(const char *name)
     const char *dot = strrchr(name, '.');
     char buf[512];
     int n = 0;
-    if (dot && !strcmp(dot, ".TXT")) plain = 1;
+    if (!dot || strcmp(dot, ".EMW")) plain = 1;      /* only our own format carries styles */
     h = sys_create(name);
     if (h < 0) return -1;
     if (!plain) { memcpy(buf, "EMBERWRITE1\n", 12); n = 12; }

@@ -320,9 +320,40 @@ static void enter_list_row(void)
     }
 }
 
+/* the right-click menu on a file */
+static char menu_path[PATH_MAX];
+static int menu_runnable;
+
+static void file_menu_chosen(int item)
+{
+    const char *dot = strrchr(menu_path, '.');
+    switch (item) {
+    case 0:                                             /* open, as a double-click would */
+        if (menu_runnable) shell_launch(menu_path);
+        else if (dot && (!strcmp(dot, ".BMP") || !strcmp(dot, ".JPG") || !strcmp(dot, ".JPEG") || !strcmp(dot, ".PNG")))
+            app_viewer_open(menu_path);
+        else app_write_open(menu_path);
+        break;
+    case 1: app_write_open(menu_path); break;           /* as text, whatever it is */
+    case 2: if (menu_runnable) shell_launch(menu_path); break;
+    }
+}
+
 static int files_event(struct window *w, struct event *e)
 {
     int rows = (w->h - HEAD_H) / ROW_H;
+    if (e->type == EV_RIGHT_DOWN) {
+        int row = (e->b - HEAD_H - 4) / ROW_H, idx = list_top + row;
+        if (e->b >= HEAD_H && e->a >= TREE_W && idx >= 0 && idx < list_count && !list[idx].is_dir) {
+            static const char *items[3] = { "Open", "Edit in Write", "Run" };
+            list_sel = idx;
+            focus_tree = 0;
+            join(menu_path, cur_path, list[idx].name);
+            menu_runnable = shell_runnable(list[idx].name);
+            popup_open(w->x + e->a, w->y + e->b, items, 0, menu_runnable ? 3 : 2, file_menu_chosen);
+        }
+        return 1;
+    }
     if (e->type == EV_MOUSE_DOWN) {
         int row = (e->b - HEAD_H - 4) / ROW_H;
         if (e->b < HEAD_H) return 0;

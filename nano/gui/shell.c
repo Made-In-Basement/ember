@@ -554,9 +554,20 @@ static void handle(struct event *e)
         return;
     }
     if (e->type == EV_RIGHT_DOWN) {
-        if (e->b >= BAR_H && window_hit(e->a, e->b) < 0) {
-            crystal_close();
-            desktop_menu(e->a, e->b);
+        int id = e->b >= BAR_H ? window_hit(e->a, e->b) : -1;
+        if (id < 0) {
+            if (e->b >= BAR_H) {
+                crystal_close();
+                desktop_menu(e->a, e->b);
+                need(REDRAW_ALL);
+            }
+        } else if (windows[id].event && e->b >= windows[id].y) {
+            struct window *w = &windows[id];
+            struct event local = *e;
+            raise_window(id);
+            local.a -= w->x;
+            local.b -= w->y;
+            w->event(w, &local);
             need(REDRAW_ALL);
         }
         return;
