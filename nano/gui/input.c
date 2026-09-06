@@ -106,6 +106,26 @@ static void mouse_byte(uint8_t b)
     input_inject_mouse(dx, -dy, buttons);       /* the mouse counts up, screens down */
 }
 
+/* A position, from a touchscreen: the pointer goes there, and a finger on
+   the glass is the left button. */
+void input_inject_absolute(int x, int y, int down)
+{
+    int buttons = down ? 1 : 0;
+    if (x < 0) x = 0;
+    if (y < 0) y = 0;
+    if (x > mouse_max_x) x = mouse_max_x;
+    if (y > mouse_max_y) y = mouse_max_y;
+    if (x != mouse_x || y != mouse_y) {
+        mouse_x = x;
+        mouse_y = y;
+        push(EV_MOUSE_MOVE, mouse_x, mouse_y);
+    }
+    if ((buttons & 1) != (last_buttons & 1))
+        push(down ? EV_MOUSE_DOWN : EV_MOUSE_UP, mouse_x, mouse_y);
+    last_buttons = buttons;
+    mouse_buttons = buttons;
+}
+
 /* Movement and buttons from any pointing device: dy is positive downwards.
    Called from an interrupt or from the main loop; either way it only
    moves the pointer and queues what changed. */

@@ -380,6 +380,12 @@ static void need_rect(int x, int y, int w, int h)
     }
 }
 
+/* a window and its frame, title and shadow */
+static void need_window(struct window *w, int x, int y)
+{
+    need_rect(x - 12, y - TITLE_H - 12, w->w + 48, w->h + TITLE_H + 56);
+}
+
 static void need_crystal(void)
 {
     int x, y, w, h;
@@ -459,12 +465,14 @@ static void handle(struct event *e)
     case EV_MOUSE_MOVE:
         if (drag_win >= 0) {
             struct window *w = &windows[drag_win];
+            int ox = w->x, oy = w->y;
             w->x = e->a - drag_dx;
             w->y = e->b - drag_dy;
             if (w->y < BAR_H + TITLE_H) w->y = BAR_H + TITLE_H;
             if (w->x < -w->w + 80) w->x = -w->w + 80;
             if (w->x > scr_w - 80) w->x = scr_w - 80;
-            need(REDRAW_ALL);                   /* the desktop behind it */
+            need_window(w, ox, oy);             /* where it was: the desktop behind it */
+            need_window(w, w->x, w->y);         /* and where it is now */
         }
         break;
     case EV_KEY:
