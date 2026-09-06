@@ -359,9 +359,11 @@ void viewer_closed(int id)
 void app_viewer(void)
 {
     struct dos_find f;
+    char pat[96];
     if (browser_id >= 0) return;
-    if (!cur_dir[0] || sys_findfirst(cur_dir, &f) != 0) strcpy(cur_dir, "\\WALL");
-    if (sys_findfirst(cur_dir, &f) != 0) cur_dir[0] = 0;
+    if (!cur_dir[0]) strcpy(cur_dir, "\\WALL");
+    snprintf(pat, sizeof pat, "%s\\*.*", cur_dir);
+    if (sys_findfirst(pat, &f) != 0) cur_dir[0] = 0;       /* not there: the root */
     scan(cur_dir);
     browser_id = win_open("Pictures", COLS * CELL_W + 20, HEAD + 3 * CELL_H + 20, browser_draw, browser_event);
 }
