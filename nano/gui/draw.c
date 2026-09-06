@@ -72,8 +72,10 @@ int draw_open(int want_w, int want_h)
     int mode = pick_mode(want_w, want_h, &m);
     if (mode < 0)
         return -1;
+    sys_logf("screen: setting mode %04X, %dx%d", mode, m.width, m.height);
     if (sys_set_vbe_mode(mode, 1) != 0)
         return -1;
+    sys_log("screen: mode set");
     scr_w = m.width;
     scr_h = m.height;
     fb_pitch = m.pitch;

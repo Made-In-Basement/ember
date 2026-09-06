@@ -50,6 +50,7 @@ void inset(int x, int y, int w, int h, int r, uint32_t light, uint32_t dark);
 /* a clock for animation, in milliseconds since the shell started */
 void clock_start(void);
 int  fb_write_combine(uint32_t base, uint32_t size);   /* mtrr.c */
+extern const char *fb_wc_note;
 void fb_write_combine_undo(void);
 unsigned now_ms(void);
 unsigned now_us(void);

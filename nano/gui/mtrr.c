@@ -25,6 +25,15 @@
 #define TYPE_WC          1
 
 static int used_reg = -1;               /* the register we took, to give back */
+const char *fb_wc_note = "not attempted";   /* the outcome, for the monitor */
+static char note_buf[96];
+
+static void note(const char *s) { fb_wc_note = s; sys_log(s); }
+static void notef(const char *fmt, int a, int b)
+{
+    snprintf(note_buf, sizeof note_buf, fmt, a, b);
+    note(note_buf);
+}
 
 static uint64_t rdmsr(uint32_t msr)
 {
@@ -104,17 +113,18 @@ int fb_write_combine(uint32_t base, uint32_t size)
     int n, i, free_reg = -1, bits;
     struct range r;
 
-    if (!(cpuid_edx(1) & (1 << 12))) { sys_log("framebuffer: no MTRRs on this processor"); return -1; }
+    note("framebuffer: looking at the MTRRs");
+    if (!(cpuid_edx(1) & (1 << 12))) { note("framebuffer: no MTRRs on this processor"); return -1; }
     cap = rdmsr(MSR_MTRRCAP);
     def = rdmsr(MSR_MTRRDEFTYPE);
     n = (int)(cap & 0xFF);
-    if (!(cap & (1 << 10))) { sys_log("framebuffer: processor cannot write-combine"); return -1; }
-    if (!(def & (1 << 11)))  { sys_log("framebuffer: MTRRs are disabled; left alone"); return -1; }
+    if (!(cap & (1 << 10))) { note("framebuffer: processor cannot write-combine"); return -1; }
+    if (!(def & (1 << 11)))  { note("framebuffer: MTRRs are disabled; left alone"); return -1; }
 
     /* a power of two, aligned to itself, that covers the screen */
     for (span = 0x1000; span < size; span <<= 1) ;
     if (base & (span - 1)) {
-        sys_logf("framebuffer: %08X is not aligned to a %u KB range; left alone", base, span >> 10);
+        notef("framebuffer: %08X is not aligned to a %u KB range; left alone", (int)base, (int)(span >> 10));
         return -1;
     }
     bits = phys_bits();
@@ -135,14 +145,14 @@ int fb_write_combine(uint32_t base, uint32_t size)
         }
         if (((uint64_t)base & m & addr_mask) == (b & m & addr_mask)) {
             int t = (int)(b & 0xFF);
-            if (t == TYPE_WC) { sys_log("framebuffer: already write-combining"); return 0; }
+            if (t == TYPE_WC) { note("framebuffer: already write-combining"); return 0; }
             /* an explicit range of any other type is the firmware's
                decision, and uncacheable would win over ours anyway */
-            sys_logf("framebuffer: MTRR %d already covers it (type %d); left alone", i, t);
+            notef("framebuffer: MTRR %d already covers it (type %d); left alone", i, t);
             return -1;
         }
     }
-    if (free_reg < 0) { sys_log("framebuffer: no MTRR free; left alone"); return -1; }
+    if (free_reg < 0) { note("framebuffer: no MTRR free; left alone"); return -1; }
 
     r.reg = free_reg;
     r.base = ((uint64_t)base & addr_mask) | TYPE_WC;
@@ -151,6 +161,7 @@ int fb_write_combine(uint32_t base, uint32_t size)
     used_reg = free_reg;
     sys_logf("framebuffer: %u MB at %08X now write-combining (MTRR %d of %d)",
              span >> 20, base, free_reg, n);
+    notef("framebuffer: %u MB now write-combining, MTRR %d", (int)(span >> 20), free_reg);
     return 0;
 }
 

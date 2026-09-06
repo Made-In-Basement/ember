@@ -83,7 +83,7 @@ static void monitor_draw(struct window *w)
     snprintf(b, sizeof b, "%dx%d, %d bits", scr_w, scr_h, draw_fb_bpp());
     line(w, 6, "Screen", b, TEXT_DIM);
     fill(w->x + 20, w->y + 16 + 7 * 26 + 4, w->w - 40, 1, EDGE);
-    text(F_SMALL, w->x + 20, w->y + 16 + 7 * 26 + 12, "Refreshed twice a second while open.", TEXT_DIM);
+    text(F_SMALL, w->x + 20, w->y + 16 + 7 * 26 + 12, fb_wc_note, TEXT_DIM);
 }
 
 void monitor_closed(int id)
@@ -97,7 +97,7 @@ void app_monitor(void)
     fb_type = memory_type(draw_fb_phys());
     last = shell_stats;
     last_ms = now_ms();
-    win_id = win_open("Monitor", 440, 256, monitor_draw, 0);
+    win_id = win_open("Monitor", 520, 256, monitor_draw, 0);
 }
 
 /* from the main loop: 1 when the window wants repainting */
