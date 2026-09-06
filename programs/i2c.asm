@@ -85,6 +85,22 @@ start:
         mov     si, msg_a20
         call    puts
 .a20_ok:
+        ; Prove the path to high memory works before blaming a controller:
+        ; the HD Audio block's first register (from PCI.TXT its region is
+        ; C131C000h) reads as a small non-zero capability word.
+        mov     si, msg_selftest
+        call    puts
+        mov     dword [cur_base], 0xC131C000
+        xor     bx, bx
+        call    ic_rd
+        call    print_hex32
+        mov     si, msg_selftest2
+        call    puts
+        mov     dword [cur_base], 0xFFFFFFF0     ; the reset vector in the BIOS ROM
+        xor     bx, bx
+        call    ic_rd
+        call    print_hex32
+        call    crlf
 
         ; ---- the touchpad: host 0, address 2Ch, descriptor at 20h ----
         mov     si, msg_touchpad
@@ -207,6 +223,29 @@ host_dump:
         mov     bx, PRV_POWER
         call    ic_rd
         call    print_hex32
+        call    crlf
+        ; the first registers, raw, in case the identity is elsewhere
+        mov     si, msg_raw
+        call    puts
+        xor     bx, bx
+.raw:   call    ic_rd
+        call    print_hex32
+        mov     al, ' '
+        call    putc
+        add     bx, 4
+        cmp     bx, 0x20
+        jb      .raw
+        call    crlf
+        mov     si, msg_raw2
+        call    puts
+        mov     bx, 0x800
+.raw2:  call    ic_rd
+        call    print_hex32
+        mov     al, ' '
+        call    putc
+        add     bx, 4
+        cmp     bx, 0x820
+        jb      .raw2
         call    crlf
         ret
 
@@ -796,6 +835,10 @@ print_hex8:
 
 msg_head:       db "The touch devices, over I2C", 13, 10
                 db "===========================", 13, 10, 0
+msg_selftest:   db "High memory check: sound chip reads ", 0
+msg_selftest2:  db ", BIOS ROM reads ", 0
+msg_raw:        db "  registers 00-1C: ", 0
+msg_raw2:       db "  private 800-81C: ", 0
 msg_a20:        db "(A20 is closed: memory above 1 MB may not be reachable)", 13, 10, 0
 msg_touchpad:   db 13, 10, "Touchpad (Synaptics, host 0, address 2Ch)", 13, 10, 0
 msg_touchscreen: db 13, 10, "Touchscreen (Atmel, host 1, address 4Ah)", 13, 10, 0
