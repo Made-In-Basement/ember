@@ -117,6 +117,8 @@ start:
         mov     bx, 6
         call    aux_cmd_timed
 
+        call    write_log                       ; in case what follows hangs
+
         ; ============================================================ 2. watch
         mov     si, msg_watch
         call    puts
@@ -169,6 +171,7 @@ start:
         sti
         call    ps2_flush
         call    show_trace
+        call    write_log                       ; the firmware test may freeze
 
         ; ============================================================ 3. BIOS
         mov     si, msg_bios
@@ -705,7 +708,8 @@ msg_status:   db "  status ", 0
 msg_byte:     db "  byte ", 0
 msg_at:       db "  at +", 0
 msg_andmore:  db "   ... and more", 13, 10, 0
-msg_bios:     db "3. Through the firmware's own mouse services", 13, 10, 0
+msg_bios:     db "3. Through the firmware's own mouse services (this may freeze the machine;", 13, 10
+              db "   the file is already saved)", 13, 10, 0
 msg_type:     db "   device type: ", 0
 msg_notype:   db "   the firmware reports no device type", 13, 10, 0
 msg_c205:     db "   initialise: ", 0
