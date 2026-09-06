@@ -96,8 +96,9 @@ int win_open(const char *title, int w, int h, void (*draw)(struct window *),
              int (*event)(struct window *, struct event *))
 {
     struct window *win;
-    int id = window_count;
-    if (window_count >= MAX_WINDOWS) return -1;
+    int id;
+    for (id = 0; id < MAX_WINDOWS && windows[id].open; id++) ;
+    if (id >= MAX_WINDOWS) return -1;
     win = &windows[id];
     memset(win, 0, sizeof *win);
     strncpy(win->title, title, sizeof win->title - 1);
@@ -112,12 +113,14 @@ int win_open(const char *title, int w, int h, void (*draw)(struct window *),
     window_count++;
     focused = id;
     damage_all();
+    sys_logf("window: opened %d (%s), %d open", id, title, window_count);
     return id;
 }
 
 void win_close(int id)
 {
     int i, j;
+    sys_logf("window: closing %d (%s), %d open", id, windows[id].title, window_count);
     music_closed(id);
     monitor_closed(id);
     write_closed(id);
@@ -199,7 +202,7 @@ static void draw_window(struct window *w, int is_focused, int with_backdrop)
     if (w->draw) {
         int ox, oy, ow, oh;
         clip_get(&ox, &oy, &ow, &oh);
-        clip_set(w->x, w->y, w->w, w->h);
+        clip_shrink(w->x, w->y, w->w, w->h);
         w->draw(w);
         clip_set(ox, oy, ow, oh);
     }
@@ -703,6 +706,7 @@ int main(int argc, char **argv)
             need_rect(x, y, w, h);
         }
         power_tick();
+        if (viewer_tick()) need(REDRAW_WINDOWS);
         if (clock_tick()) {
             int id = clock_window();
             if (id >= 0) need_window(&windows[id], windows[id].x, windows[id].y);

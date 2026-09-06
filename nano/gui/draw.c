@@ -189,6 +189,21 @@ int clip_intersects(int x, int y, int w, int h)
     return x < cx1 && x + w > cx0 && y < cy1 && y + h > cy0;
 }
 
+/* Narrow the clip to its intersection with a box.  What a window draws
+   must stay inside both the window and whatever region is being
+   repainted; setting the clip to the window alone let a window below
+   paint over one above during a partial repaint. */
+void clip_shrink(int x, int y, int w, int h)
+{
+    int x1 = x + w, y1 = y + h;
+    if (x > cx0) cx0 = x;
+    if (y > cy0) cy0 = y;
+    if (x1 < cx1) cx1 = x1;
+    if (y1 < cy1) cy1 = y1;
+    if (cx1 < cx0) cx1 = cx0;
+    if (cy1 < cy0) cy1 = cy0;
+}
+
 void clip_none(void)
 {
     cx0 = cy0 = 0;
@@ -624,8 +639,60 @@ void text_clipped(int face, int x, int y, int max_w, const char *s, uint32_t c)
 {
     int ox, oy, ow, oh;
     clip_get(&ox, &oy, &ow, &oh);
-    clip_set(x, oy, max_w, oh);
-    if (ox > x) clip_set(ox, oy, x + max_w - ox, oh);
+    clip_shrink(x, oy, max_w, oh);
     text(face, x, y, s, c);
     clip_set(ox, oy, ow, oh);
+}
+
+/* A picture drawn at another size, each output pixel the average of the
+   source pixels it covers, so icons shrink cleanly.  Alpha is kept. */
+void image_draw_scaled(const struct image *im, int x, int y, int w, int h)
+{
+    int row, col;
+    if (!im || !im->bgra || w <= 0 || h <= 0) return;
+    if (!clip_intersects(x, y, w, h)) return;
+    for (row = 0; row < h; row++) {
+        int py = y + row, sy0 = row * im->h / h, sy1 = (row + 1) * im->h / h;
+        uint32_t *out;
+        if (py < cy0 || py >= cy1) continue;
+        if (sy1 <= sy0) sy1 = sy0 + 1;
+        out = back + (size_t)py * scr_w;
+        for (col = 0; col < w; col++) {
+            int px = x + col, sx0 = col * im->w / w, sx1 = (col + 1) * im->w / w;
+            int r = 0, g = 0, b = 0, a = 0, n = 0, sy, sx;
+            if (px < cx0 || px >= cx1) continue;
+            if (sx1 <= sx0) sx1 = sx0 + 1;
+            for (sy = sy0; sy < sy1 && sy < im->h; sy++)
+                for (sx = sx0; sx < sx1 && sx < im->w; sx++) {
+                    const unsigned char *p = im->bgra + ((size_t)sy * im->w + sx) * 4;
+                    b += p[0] * p[3]; g += p[1] * p[3]; r += p[2] * p[3]; a += p[3]; n++;
+                }
+            if (!n || !a) continue;
+            {
+                uint32_t c = ((uint32_t)(r / a) << 16) | ((uint32_t)(g / a) << 8) | (uint32_t)(b / a);
+                int alpha = a / n;
+                out[px] = alpha >= 255 ? c : mix(out[px], c, alpha);
+            }
+        }
+    }
+    damage(x, y, w, h);
+}
+
+/* a line of a given thickness, as a polygon */
+void line(int x0, int y0, int x1, int y1, int th, uint32_t c)
+{
+    int dx = x1 - x0, dy = y1 - y0, pts[8];
+    int len2 = dx * dx + dy * dy, nx, ny, l;
+    if (len2 == 0) { fill(x0 - th / 2, y0 - th / 2, th, th, c); return; }
+    /* a unit normal, in 1/256ths, without a square root: good enough */
+    for (l = 1; l * l < len2; l++) ;
+    nx = -dy * 128 / l;
+    ny = dx * 128 / l;
+    nx = nx * th / 256;
+    ny = ny * th / 256;
+    pts[0] = x0 + nx; pts[1] = y0 + ny;
+    pts[2] = x1 + nx; pts[3] = y1 + ny;
+    pts[4] = x1 - nx; pts[5] = y1 - ny;
+    pts[6] = x0 - nx; pts[7] = y0 - ny;
+    poly_fill(pts, 4, c);
 }

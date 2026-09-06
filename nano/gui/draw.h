@@ -17,6 +17,7 @@ void damage_all(void);
 
 /* clipping: every primitive is confined to this rectangle */
 void clip_set(int x, int y, int w, int h);
+void clip_shrink(int x, int y, int w, int h);          /* to the intersection */
 int  clip_intersects(int x, int y, int w, int h);
 void clip_none(void);
 void clip_get(int *x, int *y, int *w, int *h);
@@ -40,6 +41,8 @@ void poly_fill(const int *pts, int n, uint32_t c);      /* pts = x,y pairs */
 struct image;
 void image_draw(const struct image *im, int x, int y);
 void image_draw_part(const struct image *im, int sx, int sw, int x, int y);
+void image_draw_scaled(const struct image *im, int x, int y, int w, int h);
+void line(int x0, int y0, int x1, int y1, int th, uint32_t c);
 void image_draw_tinted(const struct image *im, int x, int y, uint32_t tint,
                        int amount);
 void poly_fill_alpha(const int *pts, int n, uint32_t c, int alpha);

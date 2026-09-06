@@ -191,28 +191,38 @@ uint32_t *wall_decode(const char *path)
     }
 
     stride = (w * (bpp / 8) + 3) & ~3;
-    row = malloc(stride);
     dest = malloc((size_t)scr_w * scr_h * 4);
-    if (!row || !dest) goto fail;
+    if (!dest) goto fail;
 
-    /* Read the file once, top to bottom of the screen, pulling whichever
-       source row belongs there; that way a huge picture never has to be
-       held in memory all at once. */
+    /* The pixel data in one piece: a thousand small reads through the
+       kernel and the BIOS took seconds, one large one takes a moment. */
+    {
+        long total = (long)stride * h, got = 0;
+        if (total <= 0 || total > 64L * 1024 * 1024) goto fail;
+        row = malloc((size_t)total);
+        if (!row) goto fail;
+        if (sys_lseek(fd, (long)data_off, SEEK_SET) < 0) goto fail;
+        while (got < total) {
+            int piece = total - got > 65536 ? 65536 : (int)(total - got);
+            int n = sys_read(fd, row + got, piece);
+            if (n <= 0) break;
+            got += n;
+        }
+        if (got < total) goto fail;
+    }
     for (y = 0; y < scr_h; y++) {
         int sy = (int)((long)y * h / scr_h);
         int file_row = flip ? (h - 1 - sy) : sy;
         uint32_t *out = dest + (size_t)y * scr_w;
-        if (sys_lseek(fd, (long)(data_off + (long)file_row * stride), SEEK_SET) < 0)
-            goto fail;
-        if (sys_read(fd, row, stride) != stride) goto fail;
+        const uint8_t *src_row = row + (size_t)file_row * stride;
         for (x = 0; x < scr_w; x++) {
             int sx = (int)((long)x * w / scr_w);
             uint32_t c;
             if (bpp == 8) {
-                const uint8_t *e = pal + row[sx] * 4;
+                const uint8_t *e = pal + src_row[sx] * 4;
                 c = ((uint32_t)e[2] << 16) | ((uint32_t)e[1] << 8) | e[0];
             } else {
-                const uint8_t *p = row + sx * (bpp / 8);
+                const uint8_t *p = src_row + sx * (bpp / 8);
                 c = ((uint32_t)p[2] << 16) | ((uint32_t)p[1] << 8) | p[0];
             }
             out[x] = c;

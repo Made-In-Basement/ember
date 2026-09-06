@@ -15,8 +15,8 @@ static void put16(uint8_t *p, uint16_t v) { p[0] = v; p[1] = v >> 8; }
 /* 0 on success, with the name written to out */
 int screenshot_save(char *out, int out_size)
 {
-    uint8_t head[54], *row;
-    int stride = (scr_w * 3 + 3) & ~3, n, h, y;
+    uint8_t head[54], *buf, *row;
+    int stride = (scr_w * 3 + 3) & ~3, n, h, y, off = 0;
     uint32_t size = 54 + (uint32_t)stride * scr_h;
 
     for (n = 1; n < 10000; n++) {
@@ -25,10 +25,12 @@ int screenshot_save(char *out, int out_size)
         if (h < 0) break;
         sys_close(h);
     }
+    /* Assembled in memory first: a stick written one screen row at a time
+       took a minute; in 64 KB pieces it takes a few seconds. */
+    buf = malloc((size_t)stride * scr_h);
+    if (!buf) return -1;
     h = sys_create(out);
-    if (h < 0) return -1;
-    row = malloc(stride);
-    if (!row) { sys_close(h); return -1; }
+    if (h < 0) { free(buf); return -1; }
 
     memset(head, 0, sizeof head);
     head[0] = 'B'; head[1] = 'M';
@@ -42,20 +44,26 @@ int screenshot_save(char *out, int out_size)
     put32(head + 34, (uint32_t)stride * scr_h);
     put32(head + 38, 2835);
     put32(head + 42, 2835);
-    if (sys_write(h, head, 54) != 54) { free(row); sys_close(h); return -1; }
+    if (sys_write(h, head, 54) != 54) { free(buf); sys_close(h); return -1; }
 
     for (y = scr_h - 1; y >= 0; y--) {
         const uint32_t *src = back + (size_t)y * scr_w;
         int x;
-        memset(row, 0, stride);
+        row = buf + (size_t)(scr_h - 1 - y) * stride;
         for (x = 0; x < scr_w; x++) {
             row[x * 3] = (uint8_t)src[x];
             row[x * 3 + 1] = (uint8_t)(src[x] >> 8);
             row[x * 3 + 2] = (uint8_t)(src[x] >> 16);
         }
-        if (sys_write(h, row, stride) != stride) { free(row); sys_close(h); return -1; }
+        for (x = scr_w * 3; x < stride; x++) row[x] = 0;
     }
-    free(row);
+    while (off < stride * scr_h) {
+        int piece = stride * scr_h - off;
+        if (piece > 65536) piece = 65536;
+        if (sys_write(h, buf + off, piece) != piece) { free(buf); sys_close(h); return -1; }
+        off += piece;
+    }
+    free(buf);
     sys_close(h);
     return 0;
 }

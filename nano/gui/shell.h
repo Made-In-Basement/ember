@@ -72,6 +72,7 @@ void app_notice(const char *title, const char *line1, const char *line2);
 void app_viewer(void);
 void app_viewer_open(const char *path);
 void viewer_closed(int id);
+int  viewer_tick(void);
 void app_clock(void);
 int  clock_tick(void);
 int  clock_window(void);
