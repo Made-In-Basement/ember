@@ -75,6 +75,16 @@ int crystal_reach(void)
     return crystal_y + CRYSTAL_H + h + 40;
 }
 
+/* the region the gem, its glow and its menu can touch */
+void crystal_rect(int *x, int *y, int *w, int *h)
+{
+    int half = SPLIT_MAX / 2 + CRYSTAL_W + 48;
+    *x = crystal_x - half;
+    *y = 0;
+    *w = half * 2;
+    *h = crystal_reach();
+}
+
 int crystal_busy(void)
 {
     return open_state == 1 || open_state == 3;

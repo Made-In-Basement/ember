@@ -255,9 +255,14 @@ void wall_draw(void)
 {
     int i;
     if (wall_kind == WALL_PICTURE && picture && picture_w == scr_w) {
-        size_t n = (size_t)scr_w * scr_h;
-        memcpy(back, picture, n * 4);
-        damage(0, 0, scr_w, scr_h);
+        /* only the part being repainted: the whole picture is megabytes,
+           and a menu highlight should not cost a copy of all of it */
+        int x0, y0, w, h, y;
+        clip_get(&x0, &y0, &w, &h);
+        for (y = y0; y < y0 + h; y++)
+            memcpy(back + (size_t)y * scr_w + x0, picture + (size_t)y * scr_w + x0,
+                   (size_t)w * 4);
+        damage(x0, y0, w, h);
         return;
     }
     {

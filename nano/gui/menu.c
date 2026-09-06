@@ -60,6 +60,15 @@ void popup_close(void)
 
 int popup_is_open(void) { return open_flag; }
 
+/* the panel and its shadow */
+void popup_rect(int *x, int *y, int *w, int *h)
+{
+    *x = mx - 4;
+    *y = my - 4;
+    *w = MENU_W + 16;
+    *h = count * ROW_H + PAD * 2 + 16;
+}
+
 static int hit(int x, int y)
 {
     if (!open_flag) return -1;

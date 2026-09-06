@@ -357,7 +357,8 @@ static void desktop_menu(int x, int y)
 /* How much has to be repainted: nothing, the windows, or all of it.  A
    mouse move on its own needs none of it -- only the pointer moves -- and
    that is the difference between a smooth pointer and a crawling one. */
-enum { REDRAW_NONE, REDRAW_WINDOWS, REDRAW_ALL };
+enum { REDRAW_NONE, REDRAW_WINDOWS, REDRAW_RECT, REDRAW_ALL };
+static int rect_x0, rect_y0, rect_x1, rect_y1;  /* what REDRAW_RECT covers */
 static int redraw_level;
 
 static void need(int level)
@@ -365,10 +366,39 @@ static void need(int level)
     if (level > redraw_level) redraw_level = level;
 }
 
+/* everything within one region: a menu highlight, the gem's glow */
+static void need_rect(int x, int y, int w, int h)
+{
+    if (redraw_level == REDRAW_RECT) {
+        if (x < rect_x0) rect_x0 = x;
+        if (y < rect_y0) rect_y0 = y;
+        if (x + w > rect_x1) rect_x1 = x + w;
+        if (y + h > rect_y1) rect_y1 = y + h;
+    } else if (redraw_level < REDRAW_RECT) {
+        rect_x0 = x; rect_y0 = y; rect_x1 = x + w; rect_y1 = y + h;
+        redraw_level = REDRAW_RECT;
+    }
+}
+
+static void need_crystal(void)
+{
+    int x, y, w, h;
+    crystal_rect(&x, &y, &w, &h);
+    need_rect(x, y, w, h);
+}
+
 static void handle(struct event *e)
 {
     int id;
-    if (popup_event(e)) { need(REDRAW_ALL); return; }
+    if (popup_event(e)) {
+        if (e->type == EV_MOUSE_MOVE) {         /* a highlight moved: just the panel */
+            int x, y, w, h;
+            popup_rect(&x, &y, &w, &h);
+            need_rect(x, y, w, h);
+        } else
+            need(REDRAW_ALL);
+        return;
+    }
     if (e->type == EV_RIGHT_DOWN) {
         if (e->b >= BAR_H && window_hit(e->a, e->b) < 0) {
             crystal_close();
@@ -377,7 +407,11 @@ static void handle(struct event *e)
         }
         return;
     }
-    if (crystal_event(e)) { need(REDRAW_ALL); return; }
+    if (crystal_event(e)) {
+        if (e->type == EV_MOUSE_MOVE) need_crystal();   /* hover: the gem's region */
+        else need(REDRAW_ALL);
+        return;
+    }
     if (e->type != EV_MOUSE_MOVE)
         need(REDRAW_ALL);
 
@@ -524,7 +558,7 @@ int main(int argc, char **argv)
         redraw_level = REDRAW_NONE;
         touch_poll();
         while (next_event(&e)) handle(&e);
-        if (crystal_busy()) need(REDRAW_ALL);           /* the gem is moving */
+        if (crystal_busy()) need_crystal();             /* the gem is moving */
         if (now_ms() - last_clock > 20000) {
             last_clock = now_ms();
             need(REDRAW_ALL);
@@ -534,10 +568,10 @@ int main(int argc, char **argv)
 
         if (redraw_level != REDRAW_NONE || moved) {
             cursor_lift();
-            if (redraw_level == REDRAW_ALL && crystal_busy() && !drag_active) {
-                /* While the gem is breaking open, only the strip it moves
-                   through changes: repaint that and leave the rest be. */
-                clip_set(0, 0, scr_w, crystal_reach());
+            if (redraw_level == REDRAW_RECT) {
+                /* One region: everything is drawn, but only within it,
+                   and only that much reaches the screen. */
+                clip_set(rect_x0, rect_y0, rect_x1 - rect_x0, rect_y1 - rect_y0);
                 draw_all();
                 clip_none();
             } else if (redraw_level == REDRAW_ALL) {

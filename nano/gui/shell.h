@@ -31,6 +31,7 @@ void crystal_draw(void);
 int  crystal_event(struct event *e);
 int  crystal_hit(int x, int y);
 int  crystal_busy(void);
+void crystal_rect(int *x, int *y, int *w, int *h);
 int  crystal_reach(void);
 int  crystal_is_open(void);
 void crystal_toggle(void);
@@ -56,6 +57,7 @@ void popup_open(int x, int y, const char **items, const int *ticks, int n,
 void popup_close(void);
 void popup_draw(void);
 int  popup_is_open(void);
+void popup_rect(int *x, int *y, int *w, int *h);
 int  popup_event(struct event *e);
 
 void app_pictures(void);                /* choose a picture for the background */

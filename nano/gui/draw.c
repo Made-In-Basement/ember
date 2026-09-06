@@ -100,8 +100,17 @@ void draw_close(void)
 }
 
 /* ---------------------------------------------------------------- damage */
+/* What has to reach the screen.  Bounded by the clip: a repaint of one
+   region must not push the whole screen. */
 void damage(int x, int y, int w, int h)
 {
+    int x1 = x + w, y1 = y + h;
+    if (x < cx0) x = cx0;
+    if (y < cy0) y = cy0;
+    if (x1 > cx1) x1 = cx1;
+    if (y1 > cy1) y1 = cy1;
+    w = x1 - x;
+    h = y1 - y;
     if (w <= 0 || h <= 0) return;
     if (x < dmg_x0) dmg_x0 = x;
     if (y < dmg_y0) dmg_y0 = y;
@@ -173,6 +182,7 @@ void clip_none(void)
     cx1 = scr_w;
     cy1 = scr_h;
 }
+
 
 void clip_get(int *x, int *y, int *w, int *h)
 {
