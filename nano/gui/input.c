@@ -391,6 +391,8 @@ void input_close(void)
 /* ---------------------------------------------------------------- keyboard */
 static int shift_down, e0;
 
+int input_shift_held(void) { return shift_down; }
+
 static const char plain[128] = {
     0, 27, '1','2','3','4','5','6','7','8','9','0','-','=', 8, 9,
     'q','w','e','r','t','y','u','i','o','p','[',']', 13, 0, 'a','s',

@@ -26,9 +26,20 @@
 #define AMBER_HOT   0xFFC65A
 #define TEXT        0xD8C8B0
 #define TEXT_DIM    0x8A7C68
-#define PAGE        0x211A12
 #define SELECT      0x5A4218
 #define CARET       0xFFC65A
+
+/* the page: its colour and the ink for text left in the default colour */
+struct page_style { const char *name; uint32_t bg, ink, edge, select, caret; };
+static const struct page_style pages[] = {
+    { "Dark",  0x211A12, 0xD8C8B0, 0x4A3618, 0x5A4218, 0xFFC65A },
+    { "Paper", 0xF4EEE2, 0x1E1812, 0xB8AC98, 0xF0D090, 0x8A4E10 },
+    { "Sepia", 0xE6D5B8, 0x3A2A18, 0xB09A78, 0xE8BC78, 0x8A4E10 },
+    { "Night", 0x0C0A08, 0xC8B89A, 0x3A2E1E, 0x4A3618, 0xFFC65A },
+};
+#define NPAGES ((int)(sizeof pages / sizeof pages[0]))
+static int page_idx;
+#define PAGE   (pages[page_idx].bg)
 
 #define MAX_CELLS   32768
 #define MAX_LINES   3000
@@ -402,13 +413,14 @@ static int load_file(const char *name)
 /* ------------------------------------------------------------ the toolbar */
 struct tool { const char *label; int w; int id; };
 enum { T_NEW = 1, T_OPEN, T_SAVE, T_SMALL, T_NORMAL, T_BOLD, T_TITLE, T_COLOR, T_BULLET, T_CENTER,
-       T_CUT, T_COPY, T_PASTE };
+       T_CUT, T_COPY, T_PASTE, T_PAGE };
 static const struct tool tools[] = {
     { "New", 46, T_NEW }, { "Open", 50, T_OPEN }, { "Save", 50, T_SAVE }, { 0, 10, 0 },
     { "Small", 52, T_SMALL }, { "Text", 46, T_NORMAL }, { "Bold", 46, T_BOLD }, { "Title", 48, T_TITLE }, { 0, 10, 0 },
     { "", 22 * NCOLOURS + 4, T_COLOR }, { 0, 10, 0 },
     { "List", 46, T_BULLET }, { "Centre", 58, T_CENTER }, { 0, 10, 0 },
-    { "Cut", 42, T_CUT }, { "Copy", 48, T_COPY }, { "Paste", 52, T_PASTE }, { 0, 0, -1 }
+    { "Cut", 42, T_CUT }, { "Copy", 48, T_COPY }, { "Paste", 52, T_PASTE }, { 0, 10, 0 },
+    { "Page", 50, T_PAGE }, { 0, 0, -1 }
 };
 
 static int tool_at(int x, int *sub)
@@ -436,7 +448,7 @@ static void draw_toolbar(struct window *w)
             int c;
             for (c = 0; c < NCOLOURS; c++) {
                 int sx = tx + 2 + c * 22;
-                round_fill(sx, ty + 6, 18, 20, 3, colours[c]);
+                round_fill(sx, ty + 6, 18, 20, 3, c == 0 ? pages[page_idx].ink : colours[c]);
                 if (c == cur_color) round_frame(sx - 1, ty + 5, 20, 22, 4, AMBER_HOT);
             }
         } else {
@@ -465,7 +477,7 @@ static void write_draw(struct window *w)
 
     /* the page */
     round_fill(px - 6, py - 4, pw + 12, view_h + 8, 4, PAGE);
-    round_frame(px - 6, py - 4, pw + 12, view_h + 8, 4, EDGE);
+    round_frame(px - 6, py - 4, pw + 12, view_h + 8, 4, pages[page_idx].edge);
     {
         int ox, oy, ow, oh;
         clip_get(&ox, &oy, &ow, &oh);
@@ -477,13 +489,13 @@ static void write_draw(struct window *w)
             if (ly > py + view_h) break;
             /* the bullet */
             if (L->start == para_start(L->start) && (cells[para_end(L->start)].flags & 1))
-                round_fill(px + 8, ly + L->h / 2 - 3, 7, 7, 3, AMBER);
+                round_fill(px + 8, ly + L->h / 2 - 3, 7, 7, 3, page_idx == 0 || page_idx == 3 ? AMBER : 0x8A4E10);
             /* the selection behind the words */
             if (b > a && a < L->end && b > L->start) {
                 int sa = a > L->start ? a : L->start, sb = b < L->end ? b : L->end;
                 int x0 = px + x_of(i, sa), x1 = px + x_of(i, sb);
                 if (sb == L->end && b > L->end) x1 = px + L->x + L->w + 6;
-                fill(x0, ly, x1 - x0, L->h, SELECT);
+                fill(x0, ly, x1 - x0, L->h, pages[page_idx].select);
             }
             /* the words, in runs of one style */
             x = px + L->x;
@@ -497,13 +509,14 @@ static void write_draw(struct window *w)
                     k++;
                 }
                 buf[n] = 0;
-                if (n) text(face, x, ly + L->h - fh(face) + 2, buf, colours[color]);
+                if (n) text(face, x, ly + L->h - fh(face) + 2, buf,
+                            color == 0 ? pages[page_idx].ink : colours[color]);
                 x += run_w;
                 if (k < L->end && cells[k].ch == '\n') k++;
             }
             /* the caret */
             if (cursor >= L->start && cursor <= L->end && i == line_of(cursor) && !naming)
-                fill(px + x_of(i, cursor), ly + 2, 2, L->h - 4, CARET);
+                fill(px + x_of(i, cursor), ly + 2, 2, L->h - 4, pages[page_idx].caret);
         }
         clip_set(ox, oy, ow, oh);
     }
@@ -539,6 +552,7 @@ static void do_tool(int id, int sub)
     case T_CUT:    copy_selection(); delete_selection(); break;
     case T_COPY:   copy_selection(); break;
     case T_PASTE:  paste(); break;
+    case T_PAGE:   page_idx = (page_idx + 1) % NPAGES; break;
     }
 }
 
@@ -589,6 +603,9 @@ static int write_event(struct window *w, struct event *e)
                     while (t < ncells - 1 && cells[t].ch != ' ' && cells[t].ch != '\n') t++;
                     anchor = s;
                     cursor = t;
+                } else if (input_shift_held()) {       /* Shift-click: out to here */
+                    if (anchor < 0) anchor = cursor;
+                    cursor = pos;
                 } else {
                     cursor = anchor = pos;
                     dragging = 1;
@@ -699,7 +716,7 @@ void app_write(void)
 {
     if (ensure_document() != 0) return;
     if (win_id >= 0) return;
-    win_id = win_open("Write", 840, 560, write_draw, write_event);
+    win_id = win_open("Write", 900, 560, write_draw, write_event);
 }
 
 void app_write_open(const char *path)
@@ -711,5 +728,5 @@ void app_write_open(const char *path)
     } else {
         strcpy(status, "could not open it");
     }
-    if (win_id < 0) win_id = win_open("Write", 840, 560, write_draw, write_event);
+    if (win_id < 0) win_id = win_open("Write", 900, 560, write_draw, write_event);
 }

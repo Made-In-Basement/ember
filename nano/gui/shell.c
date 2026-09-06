@@ -553,6 +553,13 @@ static void handle(struct event *e)
             if (w->x > scr_w - 80) w->x = scr_w - 80;
             need_window(w, ox, oy);             /* where it was: the desktop behind it */
             need_window(w, w->x, w->y);         /* and where it is now */
+        } else if ((mouse_buttons & 1) && focused >= 0 && windows[focused].event) {
+            /* a drag inside a window: a selection being made */
+            struct window *w = &windows[focused];
+            struct event local = *e;
+            local.a -= w->x;
+            local.b -= w->y;
+            if (w->event(w, &local)) need_window(w, w->x, w->y);
         }
         break;
     case EV_KEY:
