@@ -174,6 +174,8 @@ static int icon_sel = -1;
 static void draw_icons(void)
 {
     int i;
+    if (!clip_intersects(ICON_X - 8, ICON_Y - 8, ICON_W + 8, ICON_COUNT * ICON_H + 8))
+        return;                                 /* the column is not in the region */
     for (i = 0; i < ICON_COUNT; i++) {
         int x = ICON_X, y = ICON_Y + i * ICON_H;
         int lit = (i == icon_sel);
@@ -303,14 +305,24 @@ static void draw_cursor(int x, int y)
     damage(x, y, 12, 18);
 }
 
+/* a window's whole footprint: frame, title, shadow and halo */
+static int window_shows(struct window *w)
+{
+    return clip_intersects(w->x - 8, w->y - TITLE_H - 8, w->w + 32, w->h + TITLE_H + 40);
+}
+
 static void draw_all(void)
 {
-    int i;
+    int i, cx, cy, cw, ch;
     draw_desktop();
     for (i = 0; i < window_count; i++)
-        draw_window(&windows[z_order[i]], z_order[i] == focused, 1);
-    draw_bar();
-    crystal_draw();
+        if (window_shows(&windows[z_order[i]]))
+            draw_window(&windows[z_order[i]], z_order[i] == focused, 1);
+    if (clip_intersects(0, 0, scr_w, BAR_H))
+        draw_bar();
+    crystal_rect(&cx, &cy, &cw, &ch);
+    if (clip_intersects(cx, cy, cw, ch))
+        crystal_draw();
     popup_draw();
 }
 
@@ -571,7 +583,10 @@ int main(int argc, char **argv)
             last_clock = now_ms();
             need(REDRAW_ALL);
         }
-        if (music_tick()) need(REDRAW_WINDOWS);         /* only its own window */
+        if (music_tick()) {                             /* its display moved */
+            int id = music_window();
+            if (id >= 0) need_window(&windows[id], windows[id].x, windows[id].y);
+        }
         moved = (mouse_x != last_x || mouse_y != last_y);
 
         if (redraw_level != REDRAW_NONE || moved) {

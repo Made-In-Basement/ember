@@ -17,6 +17,7 @@ void damage_all(void);
 
 /* clipping: every primitive is confined to this rectangle */
 void clip_set(int x, int y, int w, int h);
+int  clip_intersects(int x, int y, int w, int h);
 void clip_none(void);
 void clip_get(int *x, int *y, int *w, int *h);
 

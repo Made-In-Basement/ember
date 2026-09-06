@@ -430,6 +430,8 @@ int music_tick(void)
     return changed;
 }
 
+int music_window(void) { return win_id; }
+
 /* true while there is sound to keep feeding: the loop must not sleep then */
 int music_active(void)
 {

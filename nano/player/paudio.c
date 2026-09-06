@@ -15,7 +15,8 @@
 #include "minimp3.h"
 
 #define IN_BUF      (32 * 1024)         /* compressed bytes held at a time */
-#define LEAD_FRAMES 8192                /* how far ahead of the DMA we keep */
+#define LEAD_GAP    1024                /* how close behind the DMA we may write */
+static unsigned lead_frames;            /* how far ahead of the DMA we keep: the ring, nearly */
 
 static struct pcm_info pcm;
 static volatile int16_t *ring;
@@ -164,8 +165,9 @@ int audio_start(void)
     if (sys_pcm_start(&pcm) < 0) return -1;
     ring = (volatile int16_t *)pcm.ring_phys;
     ring_frames = pcm.ring_size / 4;
+    lead_frames = ring_frames > LEAD_GAP * 2 ? ring_frames - LEAD_GAP : ring_frames / 2;
     lpib = (volatile uint32_t *)pcm.lpib_phys;
-    wpos = LEAD_FRAMES % ring_frames;
+    wpos = lead_frames % ring_frames;
     audio_ready = 1;
     return 0;
 }
@@ -228,8 +230,8 @@ int audio_pump(void)
     hw = (*lpib / 4) % ring_frames;
     ahead = (wpos - hw + ring_frames) % ring_frames;
     if (ahead > ring_frames - 64) ahead = 0;    /* the hardware caught up */
-    if (ahead >= LEAD_FRAMES) return 1;
-    room = LEAD_FRAMES - ahead;
+    if (ahead >= lead_frames) return 1;
+    room = lead_frames - ahead;
     w = wpos;
     while (room--) {
         int l, r;

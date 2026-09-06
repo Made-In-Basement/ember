@@ -176,6 +176,14 @@ void clip_set(int x, int y, int w, int h)
     cy1 = y + h > scr_h ? scr_h : y + h;
 }
 
+/* does a box touch what is being repainted?  Whole windows, icons and
+   glyphs are skipped on the strength of this, which is what makes a
+   region repaint cheap. */
+int clip_intersects(int x, int y, int w, int h)
+{
+    return x < cx1 && x + w > cx0 && y < cy1 && y + h > cy0;
+}
+
 void clip_none(void)
 {
     cx0 = cy0 = 0;
@@ -489,6 +497,7 @@ void image_draw_part(const struct image *im, int sx, int sw, int x, int y)
     if (sx < 0) { sw += sx; x -= sx; sx = 0; }
     if (sx + sw > im->w) sw = im->w - sx;
     if (sw <= 0) return;
+    if (!clip_intersects(x, y, sw, im->h)) return;
     for (row = 0; row < im->h; row++) {
         int py = y + row;
         const unsigned char *p;
@@ -569,6 +578,10 @@ void text(int face, int x, int y, const char *s, uint32_t c)
         const struct glyph *g = glyph_of(f, (uint8_t)*s);
         int row, col;
         if (!g) continue;
+        if (!clip_intersects(x + g->bx, y + g->by, g->w, g->h)) {
+            x += g->advance;                    /* nothing of it shows */
+            continue;
+        }
         for (row = 0; row < g->h; row++) {
             const uint8_t *cov = f->pixels + g->offset + row * g->w;
             int py = y + g->by + row;
