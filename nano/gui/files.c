@@ -334,7 +334,7 @@ static int files_event(struct window *w, struct event *e)
             int idx = list_top + row;
             focus_tree = 0;
             if (idx >= 0 && idx < list_count) {
-                if (idx == list_sel) enter_list_row();
+                if (e->dbl && idx == list_sel) enter_list_row();    /* a double-click opens */
                 else list_sel = idx;
             }
         }

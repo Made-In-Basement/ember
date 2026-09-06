@@ -251,8 +251,8 @@ static void draw_bar(void)
          (BAR_H - text_height(F_BOLD)) / 2, clk, AMBER);
 }
 
-#define CUR_W 12
-#define CUR_H 18
+#define CUR_W 13
+#define CUR_H 20
 static uint32_t cursor_under[CUR_W * CUR_H];
 static int cursor_saved_x = -1, cursor_saved_y;
 
@@ -292,10 +292,11 @@ static void cursor_save(int x, int y)
 static void draw_cursor(int x, int y)
 {
     static const char *shape[] = {
-        "X.........", "XX........", "XoX.......", "XooX......",
-        "XoooX.....", "XooooX....", "XoooooX...", "XooooooX..",
-        "XoooooooX.", "XooooXXXXX", "XooXoX....", "XoX.XoX...",
-        "XX..XoX...", "X....XoX..", ".....XoX..", "......XX..", 0
+        "X............", "XX...........", "XoX..........", "XooX.........",
+        "XoooX........", "XooooX.......", "XoooooX......", "XooooooX.....",
+        "XoooooooX....", "XooooooooX...", "XoooooooooX..", "XooooooXXXXX.",
+        "XoooXooX.....", "XooX.XooX....", "XoX...XooX...", "XX....XooX...",
+        "X......XooX..", ".......XooX..", "........XX...", 0
     };
     int row, col;
     for (row = 0; shape[row]; row++)
@@ -304,7 +305,7 @@ static void draw_cursor(int x, int y)
             if (c == 'X') pixel_blend(x + col, y + row, 0x000000, 210);
             else if (c == 'o') pixel_blend(x + col, y + row, AMBER_HOT, 255);
         }
-    damage(x, y, 12, 18);
+    damage(x, y, CUR_W, CUR_H);
 }
 
 /* a window's whole footprint: frame, title, shadow and halo */
@@ -450,7 +451,7 @@ static void handle(struct event *e)
         if (id < 0) {
             int ic = icon_hit(e->a, e->b);
             if (ic >= 0) {
-                if (icon_sel == ic) shell_run_menu(ic);  /* a second click opens */
+                if (e->dbl && icon_sel == ic) shell_run_menu(ic);  /* a double-click opens */
                 else icon_sel = ic;
             } else {
                 icon_sel = -1;

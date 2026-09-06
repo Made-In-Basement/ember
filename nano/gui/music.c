@@ -369,7 +369,7 @@ static int music_event(struct window *w, struct event *e)
         if (y >= LIST_Y) {
             int idx = top + (y - LIST_Y) / ROW_H;
             if (idx < track_count) {
-                if (idx == sel) play_track(idx);
+                if (e->dbl && idx == sel) play_track(idx);   /* a double-click plays */
                 else sel = idx;
             }
             return 1;

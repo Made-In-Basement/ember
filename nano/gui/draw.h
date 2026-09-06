@@ -57,6 +57,7 @@ extern int mtrr_count, mtrr_default;
 void fb_write_combine_undo(void);
 unsigned now_ms(void);
 unsigned now_us(void);
+unsigned tsc_mhz(void);
 uint32_t draw_fb_phys(void);
 int      draw_fb_bpp(void);
 extern unsigned long draw_present_bytes;

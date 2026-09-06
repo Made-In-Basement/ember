@@ -502,6 +502,8 @@ unsigned now_ms(void)
     return (unsigned)((rdtsc() - tsc_base) / (tsc_hz / 1000u));
 }
 
+unsigned tsc_mhz(void) { return (unsigned)(tsc_hz / 1000000u); }
+
 unsigned now_us(void)
 {
     return (unsigned)((rdtsc() - tsc_base) / (tsc_hz / 1000000u));

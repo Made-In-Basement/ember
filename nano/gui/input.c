@@ -27,13 +27,33 @@ static volatile struct event queue[64];
 static volatile int q_head, q_tail;
 static int last_buttons;
 
+/* A double-click is two presses within 400 ms and a few pixels of each
+   other; a press long after a first one is just another press, however
+   near.  Decided here, once, so every window agrees on it. */
+static unsigned last_down_ms;
+static int last_down_x = -1000, last_down_y = -1000;
+
 static void push(int type, int a, int b)
 {
     int next = (q_head + 1) % 64;
+    int dbl = 0;
     if (next == q_tail) return;                 /* full: drop the oldest news */
+    if (type == EV_MOUSE_DOWN) {
+        unsigned now = now_ms();
+        int dx = a - last_down_x, dy = b - last_down_y;
+        if (now - last_down_ms < 400 && dx > -8 && dx < 8 && dy > -8 && dy < 8) {
+            dbl = 1;
+            last_down_ms = 0;                   /* a third press starts afresh */
+        } else {
+            last_down_ms = now;
+        }
+        last_down_x = a;
+        last_down_y = b;
+    }
     queue[q_head].type = type;
     queue[q_head].a = a;
     queue[q_head].b = b;
+    queue[q_head].dbl = dbl;
     q_head = next;
 }
 

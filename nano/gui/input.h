@@ -6,7 +6,7 @@ enum {
     EV_RIGHT_DOWN, EV_RIGHT_UP, EV_KEY
 };
 
-struct event { int type, a, b; };        /* mouse: a,b = x,y.  key: a = scan, b = char */
+struct event { int type, a, b, dbl; };   /* mouse: a,b = x,y (dbl: a double-click).  key: a = scan, b = char */
 
 extern int mouse_x, mouse_y, mouse_buttons, mouse_present, mouse_via_bios;
 extern int mouse_max_x, mouse_max_y;
