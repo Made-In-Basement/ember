@@ -298,9 +298,16 @@ def build_hello():
     finish_image(out)
 
 
+def build_gpu():
+    """GPU.N32: a probe of the Intel graphics engine."""
+    build_app('gpu', [os.path.join(ROOT, 'nano', 'gpu', 'gpu.c')], 'GPU.N32')
+
+
 if __name__ == '__main__':
     if '--hello' in sys.argv:
         build_hello()
+    elif '--gpu' in sys.argv:
+        build_gpu()
     elif '--player' in sys.argv:
         build_player()
     elif '--gui' in sys.argv:
