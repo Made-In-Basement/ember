@@ -121,6 +121,11 @@ static uint32_t bar0, bar2, ggtt_entries, stolen_base;
 #define PPAT_LO             0x40E0
 #define PPAT_HI             0x40E4
 #define GDRST               0x941C
+#define RP_STATE_CAP        0x140000    /* rp0 [7:0], rp1 [15:8], rpn [23:16], in 50 MHz */
+#define RPNSWREQ            0xA008      /* the frequency asked for: ratio << 24 on Broadwell */
+#define RP_INTERRUPT_LIMITS 0xA014
+#define RPSTAT1             0xA01C      /* the frequency running: [13:7] */
+#define RP_CONTROL          0xA024
 #define RCS                 0x2000
 #define RING_TAIL(b)        ((b) + 0x30)
 #define RING_HEAD(b)        ((b) + 0x34)
@@ -198,6 +203,8 @@ static int wake(void)
     say("attribute table was %08X %08X", RD(PPAT_LO), RD(PPAT_HI));
     WR(PPAT_LO, RD(PPAT_LO) & 0xFFFFFF00u);         /* entry 0: uncached */
     say("attribute table now %08X %08X (entry 0 uncached)", RD(PPAT_LO), RD(PPAT_HI));
+    say("clock: capabilities %08X (max %u MHz, min %u MHz), running %u MHz", RD(RP_STATE_CAP),
+        (RD(RP_STATE_CAP) & 0xFF) * 50, ((RD(RP_STATE_CAP) >> 16) & 0xFF) * 50, ((RD(RPSTAT1) >> 7) & 0x7F) * 50);
     say("render ring: head %08X tail %08X ctl %08X mi_mode %08X gfx_mode %08X eir %08X",
         RD(RING_HEAD(RCS)), RD(RING_TAIL(RCS)), RD(RING_CTL(RCS)), RD(RING_MI_MODE(RCS)), RD(RING_GFX_MODE(RCS)), RD(RING_EIR(RCS)));
     return 0;
@@ -232,6 +239,10 @@ static void texture(void)               /* an amber and slate checker with a war
             int check = ((x >> 3) + (y >> 3)) & 1;
             uint32_t r = check ? 0xF0 - y : 0x30 + y / 2, g = check ? 0xA0 - y / 2 : 0x28 + y / 3, b = check ? 0x20 : 0x40 + x / 2;
             tex[y * TEX_W + x] = 0xFF000000u | (r << 16) | (g << 8) | b;
+            if (y >= 60) {                          /* the bottom rows: backgrounds, one a phase */
+                static const uint32_t dark[4] = { 0xFF1A1410u, 0xFF0E1A12u, 0xFF101828u, 0xFF000000u };
+                tex[y * TEX_W + x] = dark[y - 60];
+            }
         }
     cache_flush(tex, TEX_W * TEX_H * 4);
     mfence();
@@ -613,7 +624,8 @@ static uint32_t build_frame(uint32_t target_gpu, float ax, float ay, int bg_row,
             int c = face[i][tri[k]];
             float z = rz[c], sx = cx + focal * rx[c] / z, sy = cy - focal * ry[c] / z;
             float d = (1.0f / near - 1.0f / z) / (1.0f / near - 1.0f / far);    /* 0 near .. 1 far */
-            put_vertex(vb + n * 6, sx, sy, d, w_is_one ? 1.0f : z, fuv[tri[k]][0], fuv[tri[k]][1]);
+            if (w_is_one) put_vertex(vb + n * 6, sx, sy, d, 1.0f, fuv[tri[k]][0], fuv[tri[k]][1]);
+            else put_vertex(vb + n * 6, sx * z, sy * z, d * z, z, fuv[tri[k]][0], fuv[tri[k]][1]);
             n++;
         }
 
@@ -821,14 +833,11 @@ static int draw(void)
     for (phase = 0; phase < 8; phase++) {
         /* shape (0 = the old triangle routine), variant, w = 1?, frames, write-combining?, fixed target */
         static const int plan[8][6] = {
-            { 0, 0, 0, 30, 0, 0 },      /* the triangle exactly as it ran before, on screen 0 */
-            { 0, 0, 0, 30, 0, -1 },     /* the same, alternating screens */
-            { 1, 0, 0, 30, 0, -1 },     /* the triangle in the cube's vertex format */
-            { 2, 0, 0, 30, 0, -1 },     /* the full-screen background alone */
-            { 3, 0, 0, 60, 0, -1 },     /* background and cube, no depth */
-            { 3, 7, 0, 60, 0, -1 },     /* with the depth buffer */
-            { -1, 0, 0, 240, 1, -1 },   /* the best that worked, write-combining */
-            { -1, 0, 0, 0, 0, -1 } };
+            { 3, 7, 0, 120, 0, -1 },    /* the cube, depth-buffered, as the firmware left the clock */
+            { 3, 7, 0, 240, 0, -1 },    /* the same at the top clock */
+            { 3, 7, 1, 120, 0, -1 },    /* w = 1: the same picture, the texture warped: the control */
+            { 3, 7, 0, 600, 0, -1 },    /* ten seconds to look at */
+            { -1, 0, 0, 0, 0, -1 }, { -1, 0, 0, 0, 0, -1 }, { -1, 0, 0, 0, 0, -1 }, { -1, 0, 0, 0, 0, -1 } };
         unsigned frames = 0, gpu_total = 0, wait_total = 0, gpu_max = 0, bytes = 0;
         uint64_t t_phase = rdtsc();
         float ax = 0.5f, ay = 0.0f;
@@ -836,6 +845,14 @@ static int draw(void)
         if (!want) break;
         if (shape < 0) { if (best_shape < 0) break; shape = best_shape; variant = best_variant; }
         if (plan[phase][4]) WR(PPAT_LO, (RD(PPAT_LO) & 0xFFFFFF00u) | 0x01u);   /* entry 0: write-combining */
+        if (phase == 1) {                           /* ask for the top clock and pin it there */
+            uint32_t cap = RD(RP_STATE_CAP), rp0 = cap & 0xFF;
+            WR(RPNSWREQ, rp0 << 24);
+            WR(RP_INTERRUPT_LIMITS, (rp0 << 24) | (rp0 << 16));
+            WR(RP_CONTROL, 0xF92u);                 /* turbo, hardware mode, up on busy, down on idle */
+            for (k = 0; k < 3000000; k++) (void)RD(RPSTAT1);
+            note("clock asked for %u MHz: running %u MHz", rp0 * 50, ((RD(RPSTAT1) >> 7) & 0x7F) * 50);
+        }
         hung = 0;
         while (frames < (unsigned)want) {
             unsigned gpu_us, t_wait;
@@ -869,6 +886,7 @@ static int draw(void)
                  frames * 1000000u / (total ? total : 1), gpu_total / frames, gpu_max, wait_total / frames, bytes);
         }
         if (!hung) { best_shape = shape; best_variant = variant; }
+        note("  the clock after phase %d: %u MHz", phase, ((RD(RPSTAT1) >> 7) & 0x7F) * 50);
         flush();
         if (hung) {                                 /* the engine back, the ring again, on to the next */
             reset_engine();
