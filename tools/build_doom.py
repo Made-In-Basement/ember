@@ -308,6 +308,11 @@ def build_render():
     build_app('render', [os.path.join(ROOT, 'nano', 'gpu', 'render.c')], 'RENDER.N32')
 
 
+def build_fly():
+    """FLY.N32: a flight through a tunnel, drawn by the 3D engine."""
+    build_app('fly', [os.path.join(ROOT, 'nano', 'gpu', 'fly.c')], 'FLY.N32')
+
+
 if __name__ == '__main__':
     if '--hello' in sys.argv:
         build_hello()
@@ -315,6 +320,8 @@ if __name__ == '__main__':
         build_gpu()
     elif '--render' in sys.argv:
         build_render()
+    elif '--fly' in sys.argv:
+        build_fly()
     elif '--player' in sys.argv:
         build_player()
     elif '--gui' in sys.argv:
