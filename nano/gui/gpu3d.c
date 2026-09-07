@@ -374,6 +374,14 @@ static void reset_engine(void)
 
 static uint32_t *test_buf;
 
+/* Where a job is actually drawn: memory of the engine's own, never a buffer
+   the display is reading.  Rendering into a live scanout buffer took the
+   panel down on this machine, and no amount of flushing changed it; the
+   processor copying a window-sized rectangle costs little and cannot. */
+#define CANVAS_GPU 0x1A000000u
+static uint32_t *canvas;
+static int canvas_w, canvas_h;
+
 static int self_test(void)
 {
     float *vb = (float *)((uint8_t *)batch + OFF_VERTS);
@@ -434,8 +442,11 @@ int gpu3d_open(void)
         batch = (uint32_t *)page_aligned(4);
         tex = (uint32_t *)page_aligned(4);
         test_buf = (uint32_t *)page_aligned(4);
+        canvas_w = scr_w;
+        canvas_h = scr_h;
+        canvas = (uint32_t *)page_aligned((canvas_w * canvas_h * 4 + 4095) / 4096);
         depth = (uint32_t *)page_aligned((scr_w * 4 * depth_rows + 4095) / 4096);
-        if (!ring || !hws || !scratch || !batch || !tex || !test_buf || !depth) {
+        if (!ring || !hws || !scratch || !batch || !tex || !test_buf || !canvas || !depth) {
             snprintf(note_buf, sizeof note_buf, "3D engine: no memory for a %d MB depth buffer",
                      (int)(((unsigned)scr_w * 4 * depth_rows) >> 20));
             sys_logf("3d: could not allocate; depth wanted %u bytes", (unsigned)scr_w * 4 * depth_rows);
@@ -451,6 +462,7 @@ int gpu3d_open(void)
         gpu_map(BATCH_GPU, (uint32_t)batch, 4);
         gpu_map(TEX_GPU, (uint32_t)tex, 4);
         gpu_map(TEST_GPU, (uint32_t)test_buf, 4);
+        gpu_map(CANVAS_GPU, (uint32_t)canvas, (canvas_w * canvas_h * 4 + 4095) / 4096);
         gpu_map(DEPTH_GPU, (uint32_t)depth, (scr_w * 4 * depth_rows + 4095) / 4096);
         WR(GFX_FLSH_CNTL, 1);
         sys_logf("3d: memory ready; ring %08X batch %08X tex %08X test %08X depth %08X (%d rows)",
@@ -533,10 +545,9 @@ int gpu3d_queue(int x, int y, int w, int h, const float *verts, int n, float bg_
 
 void gpu3d_run(uint32_t *buffer)
 {
-    uint32_t target = gpu_buffer_address(buffer);
     int k;
     if (!active || !njobs) { njobs = 0; return; }
-    if (!target) { sys_log("3d: the frame is not a buffer the engine knows"); njobs = 0; return; }
+    if (!buffer) { njobs = 0; return; }
     for (k = 0; k < njobs && active; k++) {
         struct job *j = &jobs[k];
         float *vb = (float *)((uint8_t *)batch + OFF_VERTS);
@@ -550,7 +561,7 @@ void gpu3d_run(uint32_t *buffer)
         put_vertex(vb + 24, x1, y1, 1, 1, j->bg_u, j->bg_v);
         put_vertex(vb + 30, x0, y1, 1, 1, j->bg_u, j->bg_v);
         memcpy(vb + 36, j->v, (size_t)j->n * 6 * sizeof(float));
-        build_batch(target, scr_w, scr_h, scr_w * 4, j->x, j->y, j->w, j->h, j->n);
+        build_batch(CANVAS_GPU, canvas_w, canvas_h, canvas_w * 4, j->x, j->y, j->w, j->h, j->n);
         if (submit(&took) != 0) {
             failures++;
             reset_engine();
@@ -561,6 +572,20 @@ void gpu3d_run(uint32_t *buffer)
             }
         }
         last_us = took;
+        if (active) {                               /* the finished rectangle, into the frame */
+            int row;
+            cache_flush(canvas + (size_t)j->y * canvas_w + j->x, 64);
+            for (row = 0; row < j->h; row++) {
+                const uint32_t *src = canvas + (size_t)(j->y + row) * canvas_w + j->x;
+                cache_flush(src, (uint32_t)j->w * 4);
+            }
+            mfence();
+            for (row = 0; row < j->h; row++)
+                memcpy(buffer + (size_t)(j->y + row) * scr_w + j->x,
+                       canvas + (size_t)(j->y + row) * canvas_w + j->x,
+                       (size_t)j->w * 4);
+            gpu_flush(buffer, j->x, j->y, j->w, j->h);
+        }
     }
     njobs = 0;
 }

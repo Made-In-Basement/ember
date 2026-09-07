@@ -171,10 +171,25 @@ log_flush:
         jnz     .sector
         pop     ax
         call    next_cluster
-        jc      .done
+        jc      .stamp
         jmp     .cluster
 .done_pop:
         pop     ax
+.stamp:
+        ; The bytes are written in place, so the entry itself never changes and
+        ; a host that caches a file by its size and time will keep showing the
+        ; old text.  Put the time of day on it, so the change is visible.
+        mov     eax, [found_dir_lba]
+        or      eax, eax
+        jz      .done
+        call    dir_load
+        jc      .done
+        call    fat_now                         ; AX = time, DX = date
+        mov     bx, [found_dir_off]
+        mov     [dir_buf+bx+22], ax
+        mov     [dir_buf+bx+24], dx
+        mov     eax, [found_dir_lba]
+        call    dir_store
 .done:  pop     ds
         pop     es
         popad
