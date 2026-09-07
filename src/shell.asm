@@ -426,10 +426,165 @@ cmd_echo:
         ret
 
 ; ---- DIR --------------------------------------------------------------------
+; -----------------------------------------------------------------------------
+; DIR's argument: a /P switch anywhere in it, and a wildcard in the last
+; component.  On return SI points at the directory part, which may now be
+; empty, and dir_pattern holds the eleven bytes an entry has to match.
+; -----------------------------------------------------------------------------
+dir_parse_args:
+        push    ax
+        push    bx
+        push    cx
+        push    dx
+        push    di
+        mov     byte [dir_pause], 0
+        mov     byte [dir_use_root], 0
+        mov     word [dir_lines], 0
+        mov     di, dir_pattern                 ; matching everything, until told otherwise
+        mov     cx, 11
+        mov     al, '?'
+        cld
+        rep     stosb
+        mov     byte [dir_pattern+11], 0
+        ; ---- the switch, wherever it appears ----
+        mov     di, si
+.sw:    mov     al, [di]
+        or      al, al
+        jz      .sw_done
+        cmp     al, '/'
+        jne     .sw_next
+        mov     al, [di+1]
+        or      al, 0x20
+        cmp     al, 'p'
+        jne     .sw_next
+        mov     byte [dir_pause], 1
+        mov     byte [di], ' '
+        mov     byte [di+1], ' '
+        inc     di
+.sw_next:
+        inc     di
+        jmp     .sw
+.sw_done:
+        ; ---- what is left, without the spaces around it ----
+.lead:  cmp     byte [si], ' '
+        jne     .lead_done
+        inc     si
+        jmp     .lead
+.lead_done:
+        mov     di, si
+.tail:  cmp     byte [di], 0
+        je      .tail_end
+        inc     di
+        jmp     .tail
+.tail_end:
+        cmp     di, si
+        jbe     .trimmed
+        cmp     byte [di-1], ' '
+        jne     .trimmed
+        dec     di
+        mov     byte [di], 0
+        jmp     .tail_end
+.trimmed:
+        ; ---- the last separator, and the component that follows it ----
+        mov     di, si
+        xor     bx, bx
+.fs:    mov     al, [di]
+        or      al, al
+        je      .fs_done
+        cmp     al, '\'
+        je      .fs_mark
+        cmp     al, '/'
+        jne     .fs_next
+.fs_mark:
+        mov     bx, di
+.fs_next:
+        inc     di
+        jmp     .fs
+.fs_done:
+        mov     dx, si
+        or      bx, bx
+        jz      .have_comp
+        mov     dx, bx
+        inc     dx
+.have_comp:
+        ; ---- is there a wildcard in it? ----
+        mov     di, dx
+.wc:    mov     al, [di]
+        or      al, al
+        je      .done
+        cmp     al, '*'
+        je      .is_pattern
+        cmp     al, '?'
+        je      .is_pattern
+        inc     di
+        jmp     .wc
+.is_pattern:
+        push    si
+        mov     si, dx
+        mov     di, dir_pattern
+        call    to_fat_name                     ; a star becomes a run of question marks
+        pop     si
+        or      bx, bx
+        jz      .here
+        cmp     bx, si
+        jne     .cut
+        mov     byte [si], '\'                 ; the pattern was in the root
+        mov     byte [si+1], 0
+        mov     byte [dir_use_root], 1
+        jmp     .done
+.cut:   mov     byte [bx], 0                    ; the directory in front of it
+        jmp     .done
+.here:  mov     byte [si], 0                    ; no directory: this one
+.done:
+        pop     di
+        pop     dx
+        pop     cx
+        pop     bx
+        pop     ax
+        ret
+
+; -----------------------------------------------------------------------------
+; With /P, stop at the foot of each screen.  CF set if Esc was pressed.
+; -----------------------------------------------------------------------------
+dir_page_break:
+        cmp     byte [dir_pause], 0
+        je      .carry_on
+        push    ax
+        push    si
+        inc     word [dir_lines]
+        cmp     word [dir_lines], 22
+        jb      .room
+        mov     word [dir_lines], 0
+        mov     si, msg_dir_more
+        call    puts
+        call    getkey
+        push    ax
+        mov     si, msg_dir_more_gone
+        call    puts
+        pop     ax
+        cmp     al, 27
+        je      .enough
+.room:  pop     si
+        pop     ax
+.carry_on:
+        clc
+        ret
+.enough:
+        pop     si
+        pop     ax
+        stc
+        ret
+
 cmd_dir:
         cmp     byte [fs_ok], 0
         je      no_filesystem
+        call    dir_parse_args                  ; a /P switch, and a pattern if given
         mov     ax, [cur_dir_cluster]
+        cmp     byte [dir_use_root], 0
+        je      .not_root
+        xor     ax, ax                          ; "\*.EXE" lists the root
+        jmp     .have_dir
+.not_root:
         cmp     byte [si], 0
         je      .have_dir
         call    resolve_path
@@ -474,6 +629,31 @@ cmd_dir:
         call    dir_open
 .next:  call    dir_next_visible
         jc      .summary
+        ; the pattern decides whether this one is shown
+        push    si
+        push    cx
+        push    di
+        mov     di, dir_pattern
+        mov     cx, 11
+.match: mov     al, [di]
+        cmp     al, '?'
+        je      .match_on
+        cmp     al, [si]
+        jne     .no_match
+.match_on:
+        inc     si
+        inc     di
+        loop    .match
+        pop     di
+        pop     cx
+        pop     si
+        jmp     .listed
+.no_match:
+        pop     di
+        pop     cx
+        pop     si
+        jmp     .next
+.listed:
         mov     cx, 8
         call    puts_n
         mov     al, ' '
@@ -514,12 +694,16 @@ cmd_dir:
         pop     si
 .no_long:
         call    crlf
+        call    dir_page_break                  ; CF when the reader has had enough
+        jc      .stopped
         ; allow ESC to abort long listings
         call    kbhit
         jz      .next
         call    getkey
         cmp     al, 27
         jne     .next
+        ret
+.stopped:
         ret
 .summary:
         movzx   eax, word [dir_files]
@@ -1644,6 +1828,12 @@ batch_pos:      dw 0
 echo_dot:       db 0
 args_ptr:       dw 0
 dir_cluster:    dw 0
+dir_pattern:    times 12 db '?'
+dir_pause:      db 0
+dir_use_root:   db 0
+dir_lines:      dw 0
+msg_dir_more:      db "-- more --", 0
+msg_dir_more_gone: db 13, "          ", 13, 0
 dir_files:      dw 0
 dir_dirs:       dw 0
 dir_bytes:      dd 0

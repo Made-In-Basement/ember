@@ -603,7 +603,7 @@ static int vcount;
 #define SIDES    16                     /* around the tunnel */
 #define RINGS    24                     /* along it */
 #define SPACING  1.15f
-#define RADIUS   1.45f
+#define RADIUS   1.85f
 #define NEAR     0.40f
 #define FARZ     (RINGS * SPACING)
 
@@ -611,8 +611,8 @@ static float cam_x, cam_y, steer_x, steer_y, phase, bank;
 static float proj_cx, proj_cy, proj_f;
 
 /* the tunnel's centre wanders, so the flight is never straight */
-static float curve_x(float z) { return fsin(z * 0.21f + phase * 0.03f) * 1.05f; }
-static float curve_y(float z) { return fcos(z * 0.17f + phase * 0.024f) * 0.70f; }
+static float curve_x(float z) { return fsin(z * 0.21f + phase * 0.03f) * 0.62f; }
+static float curve_y(float z) { return fcos(z * 0.17f + phase * 0.024f) * 0.40f; }
 
 /* The one texture, in four quarters of rising brightness: a plated wall
    with lit seams.  A face picks the quarter that suits how it is lit and

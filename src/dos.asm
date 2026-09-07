@@ -163,6 +163,18 @@ int29_handler:
 
 ; INT 2Fh: multiplex.  Only the "is X installed?" probes get an answer
 int2f_handler:
+        cmp     ax, 0x4300                      ; is there an XMS driver?
+        jne     .not_xms_check
+        mov     al, 0x80                        ; there is
+        iret
+.not_xms_check:
+        cmp     ax, 0x4310                      ; where do I call it?
+        jne     .not_xms_entry
+        push    cs
+        pop     es
+        mov     bx, xms_entry
+        iret
+.not_xms_entry:
         cmp     ax, 0x1687                      ; DPMI installation check
         jne     .not_dpmi
         mov     ax, 0x0001                      ; non-zero: no DPMI host

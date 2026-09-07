@@ -44,6 +44,7 @@ start:
         call    disk_init
         call    fs_init
         call    mem_init
+        call    xms_init                        ; extended memory, for DOS programs
         call    log_reset
         mov     si, msg_log_header
         call    log_text
@@ -116,6 +117,7 @@ section .text
 %include "gui.asm"
 %include "apps.asm"
 %include "pm32.asm"
+%include "xms.asm"
 
 section .data
 boot_drive:     db 0
