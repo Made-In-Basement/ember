@@ -115,7 +115,7 @@ static int find_device(void)
     say("id %04X:%04X class %06X rev %u  command %04X (memory %s, bus master %s)",
         id & 0xFFFF, id >> 16, cls >> 8, cls & 0xFF, cmd & 0xFFFF,
         (cmd & 2) ? "on" : "OFF", (cmd & 4) ? "on" : "off");
-    if ((id & 0xFFFF) != 0x8086 || ((cls >> 16) & 0xFF) != 0x03) {
+    if ((id & 0xFFFF) != 0x8086 || (cls >> 24) != 0x03) {      /* base class 3: display */
         say("not Intel graphics: nothing more to try");
         return -1;
     }
@@ -129,8 +129,8 @@ static int find_device(void)
     say("GGC %08X: graphics memory %u MB stolen at %08X, GGTT %u MB (%u pages of address space)",
         ggc, stolen_bytes >> 20, stolen_base, ggtt_bytes >> 20, ggtt_bytes / 8);
     if (!(cmd & 2) || !ggtt_bytes) { say("memory decoding off or no GGTT: stopping"); return -1; }
-    if ((id >> 16) == 0x1616) say("that is HD Graphics 5300, Broadwell GT2: the one we expect");
-    else say("device %04X is not the 1616 this program was written against; going on carefully", id >> 16);
+    if ((id >> 16) == 0x1616 || (id >> 16) == 0x161E) say("that is HD Graphics 5300, Broadwell GT2: the one we expect");
+    else say("device %04X is not the Broadwell GT2 this program was written against; going on carefully", id >> 16);
     mmio = (volatile uint32_t *)bar0;
     return 0;
 }
