@@ -348,6 +348,40 @@ static uint32_t *cmd;                   /* where the next command goes */
 static void emit(uint32_t v) { *cmd++ = v; }
 static void emit_zeros(int n) { while (n--) emit(0); }
 
+/* the state that never changes: the binding table, the sampler, colour
+   calc and blend, the viewports, the scissor, and the pixel shader itself.
+   Written once; the cube's frames rewrite only surfaces and vertices. */
+static void build_state(void)
+{
+    uint8_t *b = (uint8_t *)batch;
+    uint32_t *p;
+    int i;
+    union { float f; uint32_t u; } fl;
+    p = (uint32_t *)(b + OFF_BT);
+    p[0] = OFF_SS_RT;
+    p[1] = OFF_SS_TEX;
+    p = (uint32_t *)(b + OFF_SAMPLER);              /* nearest, clamp */
+    p[0] = 0; p[1] = 0; p[2] = 0;
+    p[3] = (2u << 6) | (2u << 3) | 2u;
+    memset(b + OFF_CC, 0, 24);
+    p = (uint32_t *)(b + OFF_BLEND);
+    p[0] = 0;
+    for (i = 0; i < 16; i++) {                      /* source ONE, destination ZERO, add; pre-blend clamp */
+        p[1 + i * 2] = (1u << 26) | (0x11u << 21);
+        p[2 + i * 2] = 2u;
+    }
+    p = (uint32_t *)(b + OFF_CCVP);
+    fl.f = -1.0e35f; p[0] = fl.u;
+    fl.f = 1.0e35f; p[1] = fl.u;
+    p = (uint32_t *)(b + OFF_SFVP);
+    memset(p, 0, 64);
+    fl.f = 1.0f;
+    p[9] = fl.u;                                    /* guardband x max */
+    p[11] = fl.u;                                   /* guardband y max */
+    memset(b + OFF_SCISSOR, 0, 8);
+    memcpy(b + OFF_KERNEL, ps_kernel, sizeof ps_kernel);
+}
+
 static uint32_t build_batch(int x0, int y0, int x1, int y1, int x2, int y2)
 {
     uint8_t *b = (uint8_t *)batch;
@@ -770,6 +804,7 @@ static int draw(void)
     if (active_plane < 0) { sys_set_video_mode(3); say("no plane on"); return -1; }
     WR(PLANE_SURF(active_plane), screen_gpu2[0]);
     ring_tail = RD(RING_TAIL(RCS));
+    build_state();                                  /* the shader and the rest: once */
 
     for (phase = 0; phase < 7; phase++) {
         /* variant, w = 1?, frames, write-combining?; the last uses the best that worked */
