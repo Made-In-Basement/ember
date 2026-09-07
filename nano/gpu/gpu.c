@@ -455,128 +455,177 @@ static void show_cursor(void)
          RD(CUR_CNTR(active_plane)), RD(CUR_BASE(active_plane)), RD(CUR_POS(active_plane)));
 }
 
-/* how many of a grid of 800 samples inside a rectangle are amber, as seen
-   through the given view of the screen */
-static int count_amber(volatile uint32_t *view, uint32_t pitch, int y0)
+/* ------------------------------------------------------------ time */
+static uint64_t tsc_hz;
+static uint64_t rdtsc(void) { uint32_t lo, hi; __asm__ volatile("rdtsc" : "=a"(lo), "=d"(hi)); return ((uint64_t)hi << 32) | lo; }
+
+/* the TSC against one shot of PIT channel 2, as the desktop does */
+static void clock_start(void)
 {
-    int x, y, hits = 0;
-    for (y = 0; y < 200; y += 10)
-        for (x = 0; x < 400; x += 10)
-            if ((view[(y0 + y) * (pitch / 4) + 100 + x] & 0xFFFFFF) == 0xF0A020) hits++;
-    return hits;
+    uint8_t p61 = inb(0x61);
+    uint64_t t0, t1;
+    unsigned guard = 0;
+    outb(0x61, (uint8_t)((p61 & ~0x02) | 0x01));
+    outb(0x43, 0xB0);
+    outb(0x42, 0xFF);
+    outb(0x42, 0xFF);
+    t0 = rdtsc();
+    while (!(inb(0x61) & 0x20))
+        if (++guard > 200000000u) break;
+    t1 = rdtsc();
+    outb(0x61, (uint8_t)(p61 & ~0x03));
+    if (guard <= 200000000u && t1 - t0 >= 100000)
+        tsc_hz = (t1 - t0) * 1193182u / 65535u;
 }
 
-static void wbinvd(void) { __asm__ volatile("wbinvd" ::: "memory"); }
-
-/* the commands: a 400x200 amber fill at (100,y) through the given mapping;
-   a flush, with extra bits if wanted.  Each returns the dwords it wrote. */
-static int fill_cmd(uint32_t *c, uint32_t dst, uint32_t stride, uint32_t tiled, int y)
+static unsigned us_between(uint64_t t0, uint64_t t1)
 {
-    c[0] = (2u << 29) | (0x50u << 22) | (3u << 20) | 5u;    /* XY_COLOR_BLT */
-    c[1] = (3u << 24) | (0xF0u << 16) | (tiled ? 1u << 11 : 0) | (stride & 0xFFFF);
-    c[2] = ((uint32_t)y << 16) | 100u;
-    c[3] = ((uint32_t)(y + 200) << 16) | 500u;
-    c[4] = dst;
-    c[5] = 0;
-    c[6] = 0xFFF0A020u;
-    return 7;
+    return tsc_hz ? (unsigned)((t1 - t0) / (tsc_hz / 1000000u)) : 0;
 }
 
-static int flush_cmd(uint32_t *c, uint32_t extra)
-{
-    c[0] = (0x26u << 23) | 2u | extra;                      /* MI_FLUSH_DW */
-    c[1] = 0;
-    c[2] = 0;
-    c[3] = 0;
-    return 4;
-}
+static void mfence(void) { __asm__ volatile("mfence" ::: "memory"); }
 
-/* ndw dwords were written at the tail: hand them over, wait for the head */
-static int run_ring(uint32_t *tail, int ndw)
-{
-    cache_flush(ring, 4096);
-    *tail += (uint32_t)ndw * 4;
-    WR(RING_TAIL(BCS), *tail);
-    return poll_until(RING_HEAD(BCS), 0x1FFFFC, *tail, 4000000);
-}
-
-static void moment(void)
+static void moment(void)                /* a fraction of a second of register reads */
 {
     int k;
-    for (k = 0; k < 3000000; k++) (void)RD(RING_HEAD(BCS));
+    for (k = 0; k < 3000000; k++) (void)RD(PLANE_CNTR(0));
 }
 
-static int blit(void)
+/* ------------------------------------------------------------ a screen of our own */
+#define PLANE_SURFLIVE(p)   (0x701AC + (p) * 0x1000)
+
+static uint32_t *screen;                /* ordinary memory the display will read */
+static uint32_t screen_gpu = 0x10000000u;
+static int scr_w, scr_h, scr_p;         /* p: pixels per row */
+
+static void rect(int x, int y, int w, int h, uint32_t c)
+{
+    int i, j;
+    if (x < 0) { w += x; x = 0; }
+    if (y < 0) { h += y; y = 0; }
+    if (x + w > scr_w) w = scr_w - x;
+    if (y + h > scr_h) h = scr_h - y;
+    for (j = 0; j < h; j++) {
+        uint32_t *row = screen + (y + j) * scr_p + x;
+        for (i = 0; i < w; i++) row[i] = c;
+    }
+}
+
+static uint32_t sky(int y)              /* the background: dark amber to darker */
+{
+    int t = y * 255 / (scr_h ? scr_h : 1);
+    return ((0x3A - (0x3A - 0x1A) * t / 255) << 16) | ((0x2A - (0x2A - 0x14) * t / 255) << 8) | (0x18 - (0x18 - 0x0D) * t / 255);
+}
+
+static void background(int x, int y, int w, int h)
+{
+    int j;
+    for (j = y; j < y + h; j++) rect(x, j, w, 1, sky(j));
+}
+
+/* the changed rows go to memory, where the display reads */
+static void flush_rect(int x, int y, int w, int h)
+{
+    int j;
+    for (j = 0; j < h; j++) cache_flush(screen + (y + j) * scr_p + x, (uint32_t)w * 4);
+    mfence();
+}
+
+static void scene(void)
+{
+    static const uint32_t colours[6] = { 0xF0A020, 0xFFC65A, 0xF0602A, 0x9BD27A, 0x6FB7E8, 0xC79BE8 };
+    int i, x, y;
+    background(0, 0, scr_w, scr_h);
+    rect(0, 0, scr_w, 12, 0xF0A020);                /* an amber frame */
+    rect(0, scr_h - 12, scr_w, 12, 0xF0A020);
+    rect(0, 0, 12, scr_h, 0xF0A020);
+    rect(scr_w - 12, 0, 12, scr_h, 0xF0A020);
+    for (i = 0; i < 6; i++) rect(200 + i * 300, 200, 240, 240, colours[i]);   /* six swatches */
+    for (y = 600; y < 1000 && y < scr_h; y++)      /* a checker field */
+        for (x = 200; x < 2000 && x < scr_w; x++)
+            if ((((x - 200) / 40) + ((y - 600) / 40)) & 1) screen[y * scr_p + x] = 0x4A3618;
+}
+
+static int scanout_test(void)
 {
     struct vbe_mode m;
-    int mode = pick_mode(&m), n, r, k;
-    uint32_t surf, stride, tiled, tail = 32, *c, phys, alias = 0x08000000u, ppat0;
-    volatile uint32_t *fb;
-    say("== 7. three stages of rectangles; a look after each");
+    int mode = pick_mode(&m), k, frames = 0, sx = 200, dir = 12;
+    uint32_t npages, i, phys, live0, live1, cursor_gpu2 = 0x0F000000u;
+    uint64_t t0, t1, work = 0, start;
+    say("== 4. a screen of our own, in ordinary memory");
     if (mode < 0) { say("no 32-bit linear mode 800 or wider"); return -1; }
-    say("setting mode %04X: %ux%u, %u bpp, pitch %u, framebuffer %08X", mode, m.width, m.height, m.bpp, m.pitch, m.framebuffer);
+    say("clock: TSC %u MHz", (unsigned)(tsc_hz / 1000000u));
+
+    /* the screen: as many pages as the mode needs, painted and flushed */
+    scr_w = m.width;
+    scr_h = m.height;
+    scr_p = m.pitch / 4;
+    npages = (m.pitch * m.height + 4095) / 4096;
+    screen = (uint32_t *)page_aligned((int)npages);
+    cursor = (uint32_t *)page_aligned(4);
+    if (!screen || !cursor) { say("no memory for %u pages", npages); return -1; }
+    phys = (uint32_t)screen;
+    say("our screen: %u pages at %08X, to be GPU address %08X", npages, phys, screen_gpu);
+    scene();
+    t0 = rdtsc();
+    cache_flush(screen, npages * 4096);
+    mfence();
+    t1 = rdtsc();
+    say("flushing all %u KB of it took %u us", npages * 4, us_between(t0, t1));
+
+    /* into the table */
+    for (i = 0; i < npages; i++) ggtt[(screen_gpu >> 12) + i] = (uint64_t)((phys + i * 4096) | PTE_CACHED);
+    for (i = 0; i < 4; i++) ggtt[(cursor_gpu2 >> 12) + i] = (uint64_t)(((uint32_t)cursor + i * 4096) | PTE_CACHED);
+    WR(GFX_FLSH_CNTL, 1);
+    say("mapped; entry reads back %08X", (uint32_t)ggtt[screen_gpu >> 12]);
+
+    say("setting mode %04X: %ux%u, pitch %u; then the display is pointed at our screen", mode, m.width, m.height, m.pitch);
+    flush();
     if (sys_set_vbe_mode(mode, 1) != 0) { say("the mode would not set"); return -1; }
     read_display("in the graphics mode");
-    if (active_plane < 0) { sys_set_video_mode(3); say("no plane on: cannot find the surface"); return -1; }
-    surf = RD(PLANE_SURF(active_plane)) & ~0xFFFu;
-    stride = RD(PLANE_STRIDE(active_plane));
-    tiled = RD(PLANE_CNTR(active_plane)) & (1 << 10);
-    phys = (uint32_t)ggtt[surf >> 12] & 0xFFFFF000u;
-    fb = (volatile uint32_t *)m.framebuffer;
-    say("the surface: GPU address %08X, physical %08X, aperture %08X", surf, phys, m.framebuffer);
+    if (active_plane < 0) { sys_set_video_mode(3); say("no plane on"); return -1; }
 
-    /* the screen's pages mapped again, with cache index 3 */
-    {
-        uint32_t npages = (m.pitch * m.height + 4095) / 4096, i;
-        for (i = 0; i < npages; i++)
-            ggtt[(alias >> 12) + i] = (ggtt[(surf >> 12) + i] & ~0xFFFull) | PTE_UNCACHED;
-        WR(GFX_FLSH_CNTL, 1);
-    }
+    /* the flip */
+    live0 = RD(PLANE_SURFLIVE(active_plane));
+    WR(PLANE_SURF(active_plane), screen_gpu);
+    moment();
+    live1 = RD(PLANE_SURFLIVE(active_plane));
+    note("flip: surface register %08X; live surface was %08X, is %08X", RD(PLANE_SURF(active_plane)), live0, live1);
+    cursor_gpu = cursor_gpu2;
     show_cursor();
+    flush();
+    sys_getkey();                                   /* look 1: our scene, or not */
 
-    /* stage A: entry 0 of the attribute table, the one every firmware
-       mapping names, made uncached; two fills */
-    ppat0 = RD(PPAT_LO);
-    WR(PPAT_LO, ppat0 & 0xFFFFFF00u);
-    note("stage A: table %08X %08X (entry 0 uncached); fills at y=100 through the firmware mapping, y=400 through ours",
-         RD(PPAT_LO), RD(PPAT_HI));
-    c = ring + tail / 4;
-    n = fill_cmd(c, surf, stride, tiled, 100);
-    n += fill_cmd(c + n, alias, stride, tiled, 400);
-    n += flush_cmd(c + n, 0);
-    r = run_ring(&tail, n);
+    /* three seconds of a square crossing the screen, drawn by the processor
+       into cached memory and flushed a rectangle at a time */
+    start = rdtsc();
+    while (frames < 180) {
+        uint64_t f0 = rdtsc(), f1;
+        int nx = sx + dir;
+        if (nx < 200 || nx + 400 > scr_w - 200) { dir = -dir; nx = sx + dir; }
+        background(sx, 1100, 400, 400);
+        rect(nx, 1100, 400, 400, 0xF0A020);
+        flush_rect(sx < nx ? sx : nx, 1100, 400 + (dir < 0 ? -dir : dir), 400);
+        sx = nx;
+        f1 = rdtsc();
+        work += f1 - f0;
+        frames++;
+        if (tsc_hz) while (rdtsc() - start < (uint64_t)frames * (tsc_hz / 60)) ;   /* sixty a second */
+    }
+    note("180 frames of a 400x400 square: drawing and flushing took %u us a frame", tsc_hz ? (unsigned)(work / 180 / (tsc_hz / 1000000u)) : 0);
+    flush();
+    sys_getkey();                                   /* look 2: it moved, or it did not */
+
+    /* back to the firmware's surface */
+    WR(PLANE_SURF(active_plane), 0);
     moment();
-    note("stage A: ring %s; through the aperture y=100: %d/800, y=400: %d/800", r < 0 ? "STALLED" : "ran",
-         count_amber(fb, m.pitch, 100), count_amber(fb, m.pitch, 400));
-    flush();
-    sys_getkey();                                   /* look 1 */
-
-    /* stage B: entry 0 write-back again; one fill, then the flush command
-       with its LLC bit */
-    WR(PPAT_LO, ppat0);
-    note("stage B: table %08X (entry 0 write-back again); a fill at y=700 through the firmware mapping, then MI_FLUSH_DW with bit 9",
-         RD(PPAT_LO));
-    c = ring + tail / 4;
-    n = fill_cmd(c, surf, stride, tiled, 700);
-    n += flush_cmd(c + n, 1u << 9);
-    c[n++] = 0;                                     /* MI_NOOP: an even count */
-    r = run_ring(&tail, n);
-    moment();
-    note("stage B: ring %s; through the aperture y=700: %d/800", r < 0 ? "STALLED" : "ran", count_amber(fb, m.pitch, 700));
-    flush();
-    sys_getkey();                                   /* look 2 */
-
-    /* stage C: the processor writes back every cache */
-    wbinvd();
-    note("stage C: wbinvd");
-    flush();
-    sys_getkey();                                   /* look 3 */
-
+    note("back: live surface %08X", RD(PLANE_SURFLIVE(active_plane)));
     WR(CUR_CNTR(active_plane), 0);
     WR(CUR_BASE(active_plane), 0);
+    flush();
+    sys_getkey();                                   /* look 3: the firmware's black screen */
     sys_set_video_mode(3);
     for (k = 0; k < nlater; k++) { sys_puts(later[k]); sys_puts("\r\n"); }
-    say("after it all: head %08X tail %08X acthd %08X", RD(RING_HEAD(BCS)), RD(RING_TAIL(BCS)), RD(RING_ACTHD(BCS)));
     return 0;
 }
 
@@ -590,22 +639,15 @@ static void stop_ring(void)
 int main(int argc, char **argv)
 {
     (void)argc; (void)argv;
-    say("GPU probe: the Intel graphics engine, step by step");
+    say("GPU probe: a screen in ordinary memory, scanned out by the display");
     if (find_device() != 0) { flush(); return 0; }
     flush();
     read_display("as the firmware left it");
     flush();
     if (find_ggtt() != 0) { flush(); return 0; }
     flush();
-    if (wake() != 0) { flush(); return 0; }
-    flush();
-    if (map_pages() != 0) { stop_ring(); flush(); return 0; }
-    flush();
-    if (start_ring() != 0) { stop_ring(); flush(); return 0; }
-    flush();
-    say("(the screen goes graphic now; press any key when you have seen it)");
-    blit();
-    stop_ring();
+    clock_start();
+    scanout_test();
     say("done");
     flush();
     return 0;
