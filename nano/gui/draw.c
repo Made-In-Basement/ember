@@ -14,6 +14,7 @@
 #include "nano.h"
 #include "draw.h"
 #include "gpu.h"
+#include "gpu3d.h"
 #include "guifont.h"
 #include "guiart.h"
 

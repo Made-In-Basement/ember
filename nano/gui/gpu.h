@@ -26,4 +26,11 @@ void gpu_cursor_show(int on);
 
 const char *gpu_note(void);             /* one line on what was found, for the Monitor */
 
+/* for the 3D service (gpu3d.c): the chip's registers and page table, a
+   mapping of pages of ours, and where a scanout buffer sits for the GPU */
+volatile uint32_t *gpu_regs(void);
+volatile uint64_t *gpu_table(void);
+void gpu_map(uint32_t gpu, uint32_t phys, int pages);
+uint32_t gpu_buffer_address(const uint32_t *buffer);
+
 #endif

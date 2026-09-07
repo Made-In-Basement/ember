@@ -9,6 +9,7 @@
 #include "nano.h"
 #include "draw.h"
 #include "gpu.h"
+#include "gpu3d.h"
 #include "input.h"
 #include "touch.h"
 #include "power.h"

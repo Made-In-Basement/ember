@@ -70,6 +70,22 @@ static void decline(const char *why)
 int gpu_active(void) { return active; }
 const char *gpu_note(void) { return note_buf; }
 
+/* for the 3D service: the registers, the table, a mapping, a buffer's address */
+volatile uint32_t *gpu_regs(void) { return active ? mmio : 0; }
+volatile uint64_t *gpu_table(void) { return active ? ggtt : 0; }
+void gpu_map(uint32_t gpu, uint32_t phys, int pages)
+{
+    int i;
+    if (!active) return;
+    for (i = 0; i < pages; i++) ggtt[(gpu >> 12) + i] = (uint64_t)((phys + i * 4096) | PTE_FLAGS);
+}
+uint32_t gpu_buffer_address(const uint32_t *buffer)
+{
+    int i;
+    for (i = 0; i < 3; i++) if (bufs[i] == buffer) return buf_gpu[i];
+    return 0;
+}
+
 /* ---------------------------------------------------------------- open */
 int gpu_open(uint32_t *a, uint32_t *b, uint32_t *c, int w, int h, int pitch)
 {
