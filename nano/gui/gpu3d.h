@@ -24,5 +24,6 @@ int  gpu3d_queue(int x, int y, int w, int h, const float *verts, int n, float bg
 
 /* for draw.c: run what was queued into this buffer, once it is flushed */
 void gpu3d_run(uint32_t *buffer);
+void gpu3d_note_refused(int x, int y, int w, int h, int n);
 
 #endif

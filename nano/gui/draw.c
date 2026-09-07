@@ -135,6 +135,12 @@ void draw_close(void)
 
 int draw_direct(void) { return direct; }
 
+/* the frame the display is showing, which is the one to photograph */
+const uint32_t *draw_shown_frame(void)
+{
+    return direct ? bufs[requested] : back;
+}
+
 /* Before anything is drawn: pick a buffer that is neither on the screen
    nor asked for, so there is never a wait; copy into it what the frames
    since it was last complete changed (from the newest complete buffer),

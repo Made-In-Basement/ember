@@ -130,7 +130,7 @@ static void scene3d_draw(struct window *w)
     int cx = ax + aw / 2, cy = ay + TOOL_H + ah / 2, i, f, order[24];
     float depth[24], sinx = fsin(ang_x), cosx = fcos(ang_x), siny = fsin(ang_y), cosy = fcos(ang_y);
     float scale = (aw < ah ? aw : ah) * 0.30f, focal = 3.2f, camz = 4.2f;
-    char buf[40];
+    char buf[96];
 
     /* ---- the toolbar ---- */
     vgradient(ax, ay, aw, TOOL_H, PANEL_LIT, PANEL);
@@ -211,7 +211,8 @@ static void scene3d_draw(struct window *w)
                 }
             }
         }
-        gpu3d_queue(ax, ay + TOOL_H, aw, ah - 30, verts, n, 63.5f / 64, 63.5f / 64);
+        if (gpu3d_queue(ax, ay + TOOL_H, aw, ah - 30, verts, n, 63.5f / 64, 63.5f / 64) != 0)
+            gpu3d_note_refused(ax, ay + TOOL_H, aw, ah - 30, n);
         snprintf(buf, sizeof buf, "%s, %d faces   %u fps   engine %u us at %u MHz", s->name, s->nf, shown_fps,
                  gpu3d_last_us(), gpu3d_mhz());
         text(F_SMALL, ax + 12, ay + w->h - text_height(F_SMALL) - 8, buf, TEXT_DIM);

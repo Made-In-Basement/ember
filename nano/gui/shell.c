@@ -40,6 +40,7 @@ static int z_order[MAX_WINDOWS];
 static int focused = -1;
 
 static int opening_action = -1;         /* stamped on whatever window the menu opens */
+static int shot_pending;                /* frames to let pass before the picture is taken */
 static int drag_win = -1, drag_dx, drag_dy;
 static int resize_win = -1;
 #define drag_active (drag_win >= 0)
@@ -278,6 +279,7 @@ static const struct app_entry catalogue[] = {
     { "clock",    "Clock",      &art_clock,    A_CLOCK },
     { "calendar", "Calendar",   &art_book,     A_CALENDAR },
     { "notes",    "Notes",      &art_note,     A_NOTES },
+    { "shot",     "Screenshot", &art_computer, A_SHOT },
     { "solid",    "3D",         &art_chip,     A_SCENE3D },
     { "doom",     "Doom",       &art_chip,     A_DOOM },
     { "about",    "About",      &art_info,     A_ABOUT },
@@ -878,7 +880,17 @@ static void handle(struct event *e)
             break;
         }
         if (e->a == K_F1) { app_help(); break; }
-        if ((e->a & ~K_SHIFT) == 0x137) { app_screenshot(); break; }   /* Print Screen */
+        /* Print Screen, or F12 for keyboards that bury it behind Fn.  The
+           menu is shut and the frame redrawn first, and the picture is taken
+           once that frame is on the screen, so neither the menu nor the
+           notice ends up in it. */
+        if ((e->a & ~K_SHIFT) == 0x137 || (e->a & ~K_SHIFT) == 0x58) {
+            if (crystal_is_open()) crystal_close();
+            popup_close();
+            need(REDRAW_ALL);
+            shot_pending = 2;                       /* this frame, then the next */
+            break;
+        }
         if (e->a == K_F10) { quit_requested = 1; break; }
         if (focused < 0 || !windows[focused].event) {
             /* nothing is listening: the arrows walk the desktop icons */
@@ -1041,6 +1053,7 @@ int main(int argc, char **argv)
                chip can run dry while it happens; top the ring up again the
                moment the frame is out. */
             if (music_active()) music_feed();
+            if (shot_pending && --shot_pending == 0) app_screenshot();
         } else {
             /* Nothing to draw: wait for the next interrupt rather than
                spinning.  The 100 Hz heartbeat wakes us about every ten

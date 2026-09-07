@@ -380,7 +380,7 @@ static uint32_t *test_buf;
    processor copying a window-sized rectangle costs little and cannot. */
 #define CANVAS_GPU 0x1A000000u
 static uint32_t *canvas;
-static int canvas_w, canvas_h;
+static int canvas_w, canvas_h, told;
 
 static int self_test(void)
 {
@@ -465,8 +465,8 @@ int gpu3d_open(void)
         gpu_map(CANVAS_GPU, (uint32_t)canvas, (canvas_w * canvas_h * 4 + 4095) / 4096);
         gpu_map(DEPTH_GPU, (uint32_t)depth, (scr_w * 4 * depth_rows + 4095) / 4096);
         WR(GFX_FLSH_CNTL, 1);
-        sys_logf("3d: memory ready; ring %08X batch %08X tex %08X test %08X depth %08X (%d rows)",
-                 RING_GPU, BATCH_GPU, TEX_GPU, TEST_GPU, DEPTH_GPU, depth_rows);
+        sys_logf("3d: memory ready; ring %08X batch %08X tex %08X test %08X canvas %08X depth %08X (%d rows)",
+                 RING_GPU, BATCH_GPU, TEX_GPU, TEST_GPU, CANVAS_GPU, DEPTH_GPU, depth_rows);
     }
     sys_log("3d: waking the render well");
     WR(FORCEWAKE_MT, (1u << 16) | 1u);
@@ -543,9 +543,24 @@ int gpu3d_queue(int x, int y, int w, int h, const float *verts, int n, float bg_
 }
 
 
+/* a job the service would not take: said once, with the reason */
+void gpu3d_note_refused(int x, int y, int w, int h, int n)
+{
+    static int said;
+    if (said) return;
+    said = 1;
+    sys_logf("3d: refused a job %d,%d %dx%d with %d corners (active %d, queued %d, screen %dx%d)",
+             x, y, w, h, n, active, njobs, scr_w, scr_h);
+}
+
 void gpu3d_run(uint32_t *buffer)
 {
+    static int said_empty;
     int k;
+    if (active && !njobs && !said_empty) {
+        said_empty = 1;
+        sys_log("3d: a frame reached the engine with nothing queued for it");
+    }
     if (!active || !njobs) { njobs = 0; return; }
     if (!buffer) { njobs = 0; return; }
     for (k = 0; k < njobs && active; k++) {
@@ -572,6 +587,17 @@ void gpu3d_run(uint32_t *buffer)
             }
         }
         last_us = took;
+        if (active && told < 3) {                   /* what the engine put there, the first few times */
+            int mx = j->x + j->w / 2, my = j->y + j->h / 2;
+            cache_flush(canvas + (size_t)my * canvas_w + mx, 64);
+            cache_flush(canvas + (size_t)(j->y + 4) * canvas_w + j->x + 4, 64);
+            mfence();
+            sys_logf("3d: job %d,%d %dx%d, %d corners, %u us: middle %06X corner %06X",
+                     j->x, j->y, j->w, j->h, j->n, took,
+                     canvas[(size_t)my * canvas_w + mx] & 0xFFFFFF,
+                     canvas[(size_t)(j->y + 4) * canvas_w + j->x + 4] & 0xFFFFFF);
+            told++;
+        }
         if (active) {                               /* the finished rectangle, into the frame */
             int row;
             cache_flush(canvas + (size_t)j->y * canvas_w + j->x, 64);

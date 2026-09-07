@@ -65,6 +65,7 @@ uint32_t draw_fb_phys(void);
 int      draw_fb_bpp(void);
 int      draw_direct(void);             /* 1: the display scans our buffers out itself (gpu.c) */
 void     draw_begin(int full_redraw_coming);   /* before drawing a frame: the buffer is off screen and up to date */
+const uint32_t *draw_shown_frame(void);        /* the frame on the screen now */
 extern unsigned long draw_present_bytes;
 
 /* text */
