@@ -505,16 +505,229 @@ static void reset_engine(void)
     WR(RING_CTL(RCS), 0);
 }
 
-/* ------------------------------------------------------------ section 8: draw */
+/* ------------------------------------------------------------ section 8: the cube */
+/* Two screens for the display to alternate between, a depth buffer the
+   engine sorts with, and a frame at a time: the whole pipeline state, a
+   background that also clears the depth (depth test ALWAYS, z = 1), then
+   the cube's twelve triangles with the test set to LESS.  The corners are
+   turned and projected by the processor; w carries the view depth so the
+   engine's texture interpolation is perspective-correct, and z is the
+   hyperbolic depth that is linear on the screen. */
+static uint32_t *screens[2], *depth;
+static const uint32_t screen_gpu2[2] = { 0x10000000u, 0x12000000u };
+static const uint32_t depth_gpu = 0x14000000u;
+static int depth_rows;
+
+#define VSIZE 24                        /* x y z w u v, floats */
+#define OFF_VERTS2 0x1400               /* 42 vertices: 1008 bytes */
+
+static float fsin(float x)
+{
+    float x2;
+    while (x > 3.14159265f) x -= 6.2831853f;
+    while (x < -3.14159265f) x += 6.2831853f;
+    x2 = x * x;
+    return x * (1 - x2 / 6 * (1 - x2 / 20 * (1 - x2 / 42 * (1 - x2 / 72))));
+}
+static float fcos(float x) { return fsin(x + 1.5707963f); }
+
+static void put_vertex(float *v, float x, float y, float z, float w, float u, float t)
+{
+    v[0] = x; v[1] = y; v[2] = z; v[3] = w; v[4] = u; v[5] = t;
+}
+
+/* the frame's commands and vertices; returns the byte count */
+static uint32_t build_frame(uint32_t target_gpu, float ax, float ay, int bg_row, int w_is_one, uint32_t stamp)
+{
+    static const float corner[8][3] = {
+        {-1,-1,-1}, {1,-1,-1}, {1,1,-1}, {-1,1,-1}, {-1,-1,1}, {1,-1,1}, {1,1,1}, {-1,1,1} };
+    static const int face[6][4] = { {0,1,2,3}, {5,4,7,6}, {4,0,3,7}, {1,5,6,2}, {4,5,1,0}, {3,2,6,7} };
+    static const float fuv[4][2] = { {0,0}, {1,0}, {1,0.9375f}, {0,0.9375f} };
+    uint8_t *b = (uint8_t *)batch;
+    float *vb = (float *)(b + OFF_VERTS2), rx[8], ry[8], rz[8];
+    float sinx = fsin(ax), cosx = fcos(ax), siny = fsin(ay), cosy = fcos(ay);
+    float cx = scr_w / 2.0f, cy = scr_h / 2.0f, focal = scr_h * 0.9f, camz = 4.0f, near = 1.5f, far = 8.0f;
+    float bgv = (bg_row + 0.5f) / 64.0f;
+    int i, k, n = 0;
+    uint32_t *p;
+    union { float f; uint32_t u; } fl;
+
+    /* the background: two triangles over the whole screen, at the far plane */
+    put_vertex(vb + n * 6, 0, 0, 1.0f, 1, 0.5f, bgv); n++;
+    put_vertex(vb + n * 6, (float)scr_w, 0, 1.0f, 1, 0.5f, bgv); n++;
+    put_vertex(vb + n * 6, (float)scr_w, (float)scr_h, 1.0f, 1, 0.5f, bgv); n++;
+    put_vertex(vb + n * 6, 0, 0, 1.0f, 1, 0.5f, bgv); n++;
+    put_vertex(vb + n * 6, (float)scr_w, (float)scr_h, 1.0f, 1, 0.5f, bgv); n++;
+    put_vertex(vb + n * 6, 0, (float)scr_h, 1.0f, 1, 0.5f, bgv); n++;
+
+    /* the cube's corners, turned and pushed back */
+    for (i = 0; i < 8; i++) {
+        float x = corner[i][0], y = corner[i][1], z = corner[i][2];
+        float x1 = x * cosy + z * siny, z1 = -x * siny + z * cosy;
+        float y2 = y * cosx - z1 * sinx, z2 = y * sinx + z1 * cosx;
+        rx[i] = x1; ry[i] = y2; rz[i] = z2 + camz;
+    }
+    for (i = 0; i < 6; i++)
+        for (k = 0; k < 6; k++) {
+            static const int tri[6] = { 0, 1, 2, 0, 2, 3 };
+            int c = face[i][tri[k]];
+            float z = rz[c], sx = cx + focal * rx[c] / z, sy = cy - focal * ry[c] / z;
+            float d = (1.0f / near - 1.0f / z) / (1.0f / near - 1.0f / far);    /* 0 near .. 1 far */
+            put_vertex(vb + n * 6, sx, sy, d, w_is_one ? 1.0f : z, fuv[tri[k]][0], fuv[tri[k]][1]);
+            n++;
+        }
+
+    /* the state, as before, but the target is this frame's screen */
+    surface_state((uint32_t *)(b + OFF_SS_RT), target_gpu, scr_w, scr_h, scr_p * 4);
+    surface_state((uint32_t *)(b + OFF_SS_TEX), tex_gpu, TEX_W, TEX_H, TEX_W * 4);
+
+    cmd = batch;
+    emit(GEN(1, 1, 4));
+    emit(GEN(0, 1, 2) | 1); emit_zeros(2);
+    emit(GEN(3, 1, 0x12)); emit(0);
+    emit(GEN(3, 1, 0x13)); emit(0);
+    emit(GEN(3, 1, 0x14)); emit(0);
+    emit(GEN(3, 1, 0x15)); emit(0);
+    emit(GEN(3, 1, 0x16)); emit(0);
+    emit(GEN(0, 1, 1) | 14);
+    emit(1); emit(0);
+    emit(1);
+    emit(batch_gpu | 1); emit(0);
+    emit(batch_gpu | 1); emit(0);
+    emit(0); emit(0);
+    emit(batch_gpu | 1); emit(0);
+    emit(0xFFFFF000u | 1);
+    emit((4u << 12) | 1);
+    emit(0xFFFFF000u | 1);
+    emit((4u << 12) | 1);
+    emit(GEN(3, 0, 0x23)); emit(OFF_CCVP);
+    emit(GEN(3, 0, 0x21)); emit(OFF_SFVP);
+    emit(GEN(3, 0, 0x30)); emit(64u | (1u << 16) | (2u << 25));
+    emit(GEN(3, 0, 0x33)); emit(2u << 25);
+    emit(GEN(3, 0, 0x31)); emit(2u << 25);
+    emit(GEN(3, 0, 0x32)); emit(2u << 25);
+    emit(GEN(3, 0, 0x24)); emit(OFF_BLEND | 1);
+    emit(GEN(3, 0, 0x0E)); emit(OFF_CC | 1);
+    emit(GEN(3, 0, 0x0D)); emit(0);
+    emit(GEN(3, 0, 0x18)); emit(1);
+    emit(GEN(3, 0, 0x52) | 3); emit_zeros(4);
+    emit(GEN(3, 0, 0x19) | 9); emit_zeros(10);
+    emit(GEN(3, 0, 0x1B) | 7); emit_zeros(8);
+    emit(GEN(3, 0, 0x27)); emit(0);
+    emit(GEN(3, 0, 0x2C)); emit(0);
+    emit(GEN(3, 0, 0x1C) | 2); emit_zeros(3);
+    emit(GEN(3, 0, 0x16) | 9); emit_zeros(10);
+    emit(GEN(3, 0, 0x11) | 8); emit_zeros(9);
+    emit(GEN(3, 0, 0x29)); emit(0);
+    emit(GEN(3, 0, 0x2E)); emit(0);
+    emit(GEN(3, 0, 0x1A) | 9); emit_zeros(10);
+    emit(GEN(3, 0, 0x1D) | 7); emit_zeros(8);
+    emit(GEN(3, 0, 0x28)); emit(0);
+    emit(GEN(3, 0, 0x2D)); emit(0);
+    emit(GEN(3, 0, 0x26)); emit(0);
+    emit(GEN(3, 0, 0x2B)); emit(0);
+    emit(GEN(3, 0, 0x15) | 9); emit_zeros(10);
+    emit(GEN(3, 0, 0x10) | 7); emit_zeros(8);
+    emit(GEN(3, 0, 0x1E) | 3); emit_zeros(4);
+    emit(GEN(3, 0, 0x12) | 2); emit_zeros(3);
+    emit(GEN(3, 0, 0x1F) | 2);
+    emit((1u << 22) | (1u << 29) | (1u << 28) | (1u << 11) | (1u << 5));
+    emit(0); emit(0);
+    emit(GEN(3, 0, 0x51) | 9); emit_zeros(10);
+    emit(GEN(3, 0, 0x50) | 3);
+    emit((1u << 21) | (1u << 16)); emit_zeros(3);
+    emit(GEN(3, 0, 0x13) | 2); emit_zeros(3);
+    emit(GEN(3, 0, 0x2A)); emit(OFF_BT);
+    emit(GEN(3, 0, 0x2F)); emit(OFF_SAMPLER);
+    emit(GEN(3, 0, 0x14)); emit(1u << 11);
+    emit(GEN(3, 0, 0x17) | 9); emit_zeros(10);
+    emit(GEN(3, 0, 0x20) | 10);
+    emit(OFF_KERNEL); emit(0);
+    emit((1u << 27) | (2u << 18));
+    emit(0); emit(0);
+    emit((62u << 23) | (1u << 1));
+    emit(6u << 16);
+    emit_zeros(4);
+    emit(GEN(3, 0, 0x4D)); emit(1u << 30);
+    emit(GEN(3, 0, 0x4F)); emit((1u << 31) | (1u << 8));
+    emit(GEN(3, 0, 0x0F)); emit(OFF_SCISSOR);
+    /* the depth buffer: three stalls first, as the manuals ask */
+    emit(GEN(3, 2, 0) | 4); emit(1u << 13); emit_zeros(4);
+    emit(GEN(3, 2, 0) | 4); emit(1u << 0); emit_zeros(4);
+    emit(GEN(3, 2, 0) | 4); emit(1u << 13); emit_zeros(4);
+    emit(GEN(3, 0, 0x05) | 6);                      /* DEPTH_BUFFER: 2D, D32_FLOAT, written */
+    emit((1u << 29) | (1u << 28) | (1u << 18) | (uint32_t)(scr_p * 4 - 1));
+    emit(depth_gpu); emit(0);
+    emit(((uint32_t)(scr_h - 1) << 18) | ((uint32_t)(scr_w - 1) << 4));
+    emit(0x18u); emit(0); emit(0);
+    emit(GEN(3, 0, 0x07) | 3); emit_zeros(4);
+    emit(GEN(3, 0, 0x06) | 3); emit_zeros(4);
+    emit(GEN(3, 0, 0x04) | 1); emit(0); emit(1);
+    emit(GEN(3, 1, 0) | 2);
+    emit(0); emit(((uint32_t)(scr_h - 1) << 16) | (uint32_t)(scr_w - 1)); emit(0);
+    emit(GEN(3, 0, 8) | 3);                         /* VERTEX_BUFFERS: 24 bytes a vertex */
+    emit((1u << 14) | VSIZE); emit(batch_gpu + OFF_VERTS2); emit(0); emit(42 * VSIZE);
+    emit(GEN(3, 0, 9) | 5);                         /* VERTEX_ELEMENTS: pad, xyzw, uv */
+    emit((1u << 25) | (0x000u << 16)); emit((2u << 28) | (2u << 24) | (2u << 20) | (2u << 16));
+    emit((1u << 25) | (0x000u << 16) | 0); emit((1u << 28) | (1u << 24) | (1u << 20) | (1u << 16));
+    emit((1u << 25) | (0x085u << 16) | 16); emit((1u << 28) | (1u << 24) | (2u << 20) | (3u << 16));
+    emit(GEN(3, 0, 0x4B)); emit(4);
+    emit(GEN(3, 0, 0x49) | 1); emit(0); emit(0);
+    /* the background: depth ALWAYS, writing 1.0 everywhere */
+    emit(GEN(3, 0, 0x4E) | 1); emit(3u); emit(0);
+    emit(GEN(3, 3, 0) | 5); emit(0); emit(6); emit(0); emit(1); emit(0); emit(0);
+    /* the cube: depth LESS */
+    emit(GEN(3, 0, 0x4E) | 1); emit(3u | (2u << 5)); emit(0);
+    emit(GEN(3, 3, 0) | 5); emit(0); emit(36); emit(6); emit(1); emit(0); emit(0);
+    /* done: flush the target and the depth, then say so */
+    emit(GEN(3, 2, 0) | 4);
+    emit((1u << 12) | (1u << 0) | (1u << 20) | (1u << 14) | (1u << 24));
+    emit(scratch_gpu); emit(0);
+    emit(stamp); emit(0);
+    emit(0x05000000u);
+    cache_flush(batch, 4 * 4096);
+    mfence();
+    (void)p; (void)fl;
+    return (uint32_t)((uint8_t *)cmd - b);
+}
+
+/* a batch into the ring; 0 when the stamp came back, else -1 */
+static uint32_t ring_tail;
+static int run_frame(uint32_t stamp, unsigned *gpu_us)
+{
+    uint64_t t0;
+    uint32_t pos = ring_tail & 0xFFFu;
+    ring[pos / 4] = 0x18800001u;
+    ring[pos / 4 + 1] = batch_gpu;
+    ring[pos / 4 + 2] = 0;
+    ring[pos / 4 + 3] = 0;
+    cache_flush(ring + pos / 4, 16);
+    mfence();
+    ring_tail = (ring_tail + 16) & 0xFFFu;
+    t0 = rdtsc();
+    WR(RING_TAIL(RCS), ring_tail);
+    for (;;) {
+        uint32_t word;
+        cache_flush(scratch, 64);
+        mfence();
+        word = scratch[0];
+        if (word == stamp) break;
+        if (us_since(t0) > 500000) { *gpu_us = us_since(t0); return -1; }
+    }
+    *gpu_us = us_since(t0);
+    return 0;
+}
+
 static int draw(void)
 {
     struct vbe_mode m;
     struct vbe_info info;
-    int mode = -1, i, best_w = 0, n, hung = 0, k;
-    uint32_t bytes, tail, live;
-    uint64_t t0;
+    int mode = -1, i, best_w = 0, k, cur = 0, hung = 0, phase;
+    uint32_t stamp = 1, first;
+    static const char *phase_name[3] = { "uncached, w = depth", "uncached, w = 1", "write-combining, w = depth" };
+    static const int phase_row[3] = { 60, 61, 62 };
 
-    say("== 5. the screen, then the triangle");
+    say("== 5. the cube");
     if (sys_vbe_info(&info) != 0) { say("no VESA"); return -1; }
     for (i = 0; i < info.mode_count; i++) {
         struct vbe_mode t;
@@ -526,58 +739,73 @@ static int draw(void)
     scr_h = m.height;
     scr_p = m.pitch / 4;
     npages = (m.pitch * m.height + 4095) / 4096;
-    screen = (uint32_t *)page_aligned(npages);
-    if (!screen) { say("no memory for the screen"); return -1; }
+    depth_rows = (scr_h + 31) & ~31;
+    screens[0] = (uint32_t *)page_aligned(npages);
+    screens[1] = (uint32_t *)page_aligned(npages);
+    depth = (uint32_t *)page_aligned((scr_p * 4 * depth_rows + 4095) / 4096);
+    if (!screens[0] || !screens[1] || !depth) { say("no memory for two screens and a depth buffer"); return -1; }
+    screen = screens[0];
     scene();
-    map_pages(screen_gpu, (uint32_t)screen, npages);
+    screen = screens[1];
+    scene();
+    memset(depth, 0, (size_t)scr_p * 4 * depth_rows);
+    wbinvd();
+    map_pages(screen_gpu2[0], (uint32_t)screens[0], npages);
+    map_pages(screen_gpu2[1], (uint32_t)screens[1], npages);
+    map_pages(depth_gpu, (uint32_t)depth, (scr_p * 4 * depth_rows + 4095) / 4096);
     WR(GFX_FLSH_CNTL, 1);
-    bytes = build_batch(scr_w / 2, scr_h / 6, scr_w * 5 / 6, scr_h * 5 / 6, scr_w / 6, scr_h * 5 / 6);
-    say("mode %04X %ux%u; batch of %u bytes built; setting the mode", mode, scr_w, scr_h, bytes);
+    say("mode %04X %ux%u; screens at %08X and %08X, depth at %08X (%u rows); setting the mode",
+        mode, scr_w, scr_h, screen_gpu2[0], screen_gpu2[1], depth_gpu, depth_rows);
     flush();
     if (sys_set_vbe_mode(mode, 1) != 0) { say("the mode would not set"); return -1; }
     find_plane();
     if (active_plane < 0) { sys_set_video_mode(3); say("no plane on"); return -1; }
-    WR(PLANE_SURF(active_plane), screen_gpu);
-    for (k = 0; k < 3000000; k++) (void)RD(PLANE_CNTR(0));
-    live = RD(PLANE_SURFLIVE(active_plane));
-    note("display on our screen: live surface %08X", live);
-    sys_getkey();                                   /* look 1: the empty scene */
+    WR(PLANE_SURF(active_plane), screen_gpu2[0]);
+    ring_tail = RD(RING_TAIL(RCS));
 
-    /* the batch, from the ring */
-    tail = RD(RING_TAIL(RCS));
-    ring[tail / 4] = 0x18800001u;                   /* MI_BATCH_BUFFER_START, global table */
-    ring[tail / 4 + 1] = batch_gpu;
-    ring[tail / 4 + 2] = 0;
-    ring[tail / 4 + 3] = 0;                         /* MI_NOOP */
-    cache_flush(ring + tail / 4, 16);
-    mfence();
-    tail += 16;
-    t0 = rdtsc();
-    WR(RING_TAIL(RCS), tail);
-    n = poll_until(RING_HEAD(RCS), 0x1FFFFC, tail, 4000000);
-    {
-        unsigned took = us_since(t0);
-        uint32_t word;
-        cache_flush(scratch, 64);
-        mfence();
-        word = scratch[0];
-        note("the batch: head %08X tail %08X after %u us; completion word %08X (%s)",
-             RD(RING_HEAD(RCS)), RD(RING_TAIL(RCS)), took, word, word == 0xC0FFEE01u ? "WRITTEN: the engine ran the pipeline" : "not written");
-        if (n < 0 || word != 0xC0FFEE01u) { hung = 1; dump_engine("stalled"); }
+    for (phase = 0; phase < 3 && !hung; phase++) {
+        unsigned frames = 0, gpu_total = 0, wait_total = 0, gpu_max = 0, bytes = 0;
+        uint64_t t_phase = rdtsc();
+        float ax = 0.5f, ay = 0.0f;
+        if (phase == 2) WR(PPAT_LO, (RD(PPAT_LO) & 0xFFFFFF00u) | 0x01u);      /* entry 0: write-combining */
+        while (frames < 240) {
+            unsigned gpu_us, t_wait;
+            uint64_t tw;
+            int target = cur ^ 1;
+            bytes = build_frame(screen_gpu2[target], ax, ay, phase_row[phase], phase == 1, stamp);
+            if (run_frame(stamp, &gpu_us) != 0) { hung = 1; note("phase %d frame %u: no completion after %u us", phase, frames, gpu_us); dump_engine("stalled"); break; }
+            stamp++;
+            gpu_total += gpu_us;
+            if (gpu_us > gpu_max) gpu_max = gpu_us;
+            tw = rdtsc();
+            WR(PLANE_SURF(active_plane), screen_gpu2[target]);
+            for (k = 0; k < 2000000; k++) if ((RD(PLANE_SURFLIVE(active_plane)) & ~0xFFFu) == screen_gpu2[target]) break;
+            t_wait = us_since(tw);
+            wait_total += t_wait;
+            cur = target;
+            ax += 0.011f;
+            ay += 0.017f;
+            frames++;
+        }
+        if (frames) {
+            unsigned total = us_since(t_phase);
+            note("phase %d (%s): %u frames in %u ms = %u fps; engine %u us a frame (worst %u), waiting for the panel %u us; batch %u bytes",
+                 phase, phase_name[phase], frames, total / 1000, frames * 1000000u / (total ? total : 1),
+                 gpu_total / frames, gpu_max, wait_total / frames, bytes);
+        }
+        flush();
     }
-    /* what the processor sees at the triangle's centre and outside it */
     {
-        int cx = (scr_w / 2 + scr_w * 5 / 6 + scr_w / 6) / 3, cy = (scr_h / 6 + scr_h * 5 / 6 + scr_h * 5 / 6) / 3;
-        uint32_t inside, outside;
-        cache_flush(screen + cy * scr_p + cx, 64);
-        cache_flush(screen + 40 * scr_p + 40, 64);
+        int cx = scr_w / 2, cy = scr_h / 2;
+        cache_flush(screens[cur] + cy * scr_p + cx, 64);
+        cache_flush(screens[cur] + 40 * scr_p + 40, 64);
         mfence();
-        inside = screen[cy * scr_p + cx];
-        outside = screen[40 * scr_p + 40];
-        note("pixels: inside the triangle %08X, outside %08X (the scene there is %08X)", inside, outside, 0x302414u);
+        note("last frame: pixel at the centre %08X, in the corner %08X", screens[cur][cy * scr_p + cx], screens[cur][40 * scr_p + 40]);
     }
+    first = RD(PPAT_LO);
+    note("attribute table at the end %08X", first);
     flush();
-    sys_getkey();                                   /* look 2: the triangle, textured */
+    sys_getkey();                                   /* the last frame stays until a key */
     if (hung) reset_engine();
     WR(PLANE_SURF(active_plane), 0);
     for (k = 0; k < 3000000; k++) (void)RD(PLANE_CNTR(0));
@@ -596,7 +824,7 @@ static void sleep_engine(void)
 int main(int argc, char **argv)
 {
     (void)argc; (void)argv;
-    say("render probe: a textured triangle from the 3D engine");
+    say("render probe: a spinning cube from the 3D engine, with a depth buffer");
     clock_start();
     if (find_device() != 0) { flush(); return 0; }
     flush();
