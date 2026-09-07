@@ -109,6 +109,7 @@ void app_notice(const char *title, const char *line1, const char *line2)
 {
     strncpy(notice_l1, line1, sizeof notice_l1 - 1);
     strncpy(notice_l2, line2, sizeof notice_l2 - 1);
+    win_no_app();                               /* not a program: it is not restored */
     win_open(title, 420, 96, notice_draw, 0);
 }
 void app_doom(void)  { shell_launch("\\DOOM\\NDOOM.N32"); }

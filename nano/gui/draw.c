@@ -220,6 +220,7 @@ void draw_present(void)
         /* the lines reach memory, the display is asked to show this buffer
            from its next blank, and drawing moves to the other one */
         gpu_flush(back, dmg_x0, dmg_y0, dmg_x1 - dmg_x0, dmg_y1 - dmg_y0);
+        gpu3d_run(back);                                /* the engine's part of this frame */
         gpu_flip(cur);
         requested = cur;
         frame_no++;

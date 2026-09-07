@@ -635,6 +635,9 @@ static void draw_all(void)
 }
 
 /* ---------------------------------------------------------------- events */
+/* the next window belongs to no program in the catalogue */
+void win_no_app(void) { opening_action = -1; }
+
 void shell_run_menu(int action)
 {
     opening_action = action;

@@ -123,7 +123,7 @@ static size_t deflate_fixed(const uint8_t *in, size_t n, uint8_t *out, size_t ca
         if (i + 3 <= n) {
             uint32_t h = ((in[i] << 10) ^ (in[i + 1] << 5) ^ in[i + 2]) & ((1 << HASH_BITS) - 1);
             int32_t cand = head[h];
-            int chain = 24;
+            int chain = png_effort;      /* how far back to look for a match */
             while (cand >= 0 && chain-- && i - (size_t)cand <= WINDOW - 1) {
                 int l = 0, max = (int)(n - i) < 258 ? (int)(n - i) : 258;
                 const uint8_t *p = in + cand, *q = in + i;
@@ -181,6 +181,8 @@ static int chunk(int fd, const char *type, const uint8_t *data, size_t n)
 }
 
 /* w x h pixels, top row first, as 0x00RRGGBB.  0 on success. */
+int png_effort = 24;            /* matches tried; 0 means store the bytes as they are */
+
 int png_write(const char *name, const uint32_t *px, int w, int h)
 {
     static const uint8_t sig[8] = { 137, 80, 78, 71, 13, 10, 26, 10 };
