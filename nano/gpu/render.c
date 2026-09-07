@@ -577,7 +577,7 @@ static void put_vertex(float *v, float x, float y, float z, float w, float u, fl
 #define V_DEPTH_PACKETS 1
 #define V_DEPTH_TEST    2
 #define V_FINAL_FLUSH   4
-static uint32_t build_frame(uint32_t target_gpu, float ax, float ay, int bg_row, int w_is_one, uint32_t stamp, int variant)
+static uint32_t build_frame(uint32_t target_gpu, float ax, float ay, int bg_row, int w_is_one, uint32_t stamp, int variant, int shape)
 {
     static const float corner[8][3] = {
         {-1,-1,-1}, {1,-1,-1}, {1,1,-1}, {-1,1,-1}, {-1,-1,1}, {1,-1,1}, {1,1,1}, {-1,1,1} };
@@ -588,7 +588,7 @@ static uint32_t build_frame(uint32_t target_gpu, float ax, float ay, int bg_row,
     float sinx = fsin(ax), cosx = fcos(ax), siny = fsin(ay), cosy = fcos(ay);
     float cx = scr_w / 2.0f, cy = scr_h / 2.0f, focal = scr_h * 0.9f, camz = 4.0f, near = 1.5f, far = 8.0f;
     float bgv = (bg_row + 0.5f) / 64.0f;
-    int i, k, n = 0;
+    int i, k, n = 0, count1 = 6, count2 = 36;
     uint32_t *p;
     union { float f; uint32_t u; } fl;
 
@@ -616,6 +616,15 @@ static uint32_t build_frame(uint32_t target_gpu, float ax, float ay, int bg_row,
             put_vertex(vb + n * 6, sx, sy, d, w_is_one ? 1.0f : z, fuv[tri[k]][0], fuv[tri[k]][1]);
             n++;
         }
+
+    if (shape == 1) {                               /* the old triangle, in the new format */
+        put_vertex(vb + 0, 1600, 300, 0, 1, 0.0f, 0.0f);
+        put_vertex(vb + 6, 2666, 1500, 0, 1, 1.0f, 0.0f);
+        put_vertex(vb + 12, 533, 1500, 0, 1, 0.5f, 1.0f);
+        count1 = 3; count2 = 0;
+    } else if (shape == 2) {                        /* the background alone */
+        count2 = 0;
+    }
 
     /* the state, as before, but the target is this frame's screen */
     surface_state((uint32_t *)(b + OFF_SS_RT), target_gpu, scr_w, scr_h, scr_p * 4);
@@ -719,10 +728,11 @@ static uint32_t build_frame(uint32_t target_gpu, float ax, float ay, int bg_row,
     emit(GEN(3, 0, 0x49) | 1); emit(0); emit(0);
     /* the background: depth ALWAYS, writing 1.0 everywhere */
     emit(GEN(3, 0, 0x4E) | 1); emit((variant & V_DEPTH_TEST) ? 3u : 0u); emit(0);
-    emit(GEN(3, 3, 0) | 5); emit(0); emit(6); emit(0); emit(1); emit(0); emit(0);
-    /* the cube: depth LESS */
-    emit(GEN(3, 0, 0x4E) | 1); emit((variant & V_DEPTH_TEST) ? (3u | (2u << 5)) : 0u); emit(0);
-    emit(GEN(3, 3, 0) | 5); emit(0); emit(36); emit(6); emit(1); emit(0); emit(0);
+    emit(GEN(3, 3, 0) | 5); emit(0); emit((uint32_t)count1); emit(0); emit(1); emit(0); emit(0);
+    if (count2) {                                   /* the cube: depth LESS */
+        emit(GEN(3, 0, 0x4E) | 1); emit((variant & V_DEPTH_TEST) ? (3u | (2u << 5)) : 0u); emit(0);
+        emit(GEN(3, 3, 0) | 5); emit(0); emit((uint32_t)count2); emit(6); emit(1); emit(0); emit(0);
+    }
     /* done: flush the target (and the depth, when asked), then say so */
     emit(GEN(3, 2, 0) | 4);
     emit((1u << 12) | ((variant & V_FINAL_FLUSH) ? 1u : 0u) | (1u << 20) | (1u << 14) | (1u << 24));
@@ -746,6 +756,8 @@ static int run_frame(uint32_t stamp, unsigned *gpu_us)
     ring[pos / 4 + 2] = 0;
     ring[pos / 4 + 3] = 0;
     cache_flush(ring + pos / 4, 16);
+    scratch[0] = 0;
+    cache_flush(scratch, 64);
     mfence();
     ring_tail = (ring_tail + 16) & 0xFFFu;
     t0 = rdtsc();
@@ -766,7 +778,7 @@ static int draw(void)
 {
     struct vbe_mode m;
     struct vbe_info info;
-    int mode = -1, i, best_w = 0, k, cur = 0, hung = 0, phase, best_variant = -1;
+    int mode = -1, i, best_w = 0, k, cur = 0, hung = 0, phase, best_variant = -1, best_shape = -1;
     uint32_t stamp = 1, first;
 
     say("== 5. the cube, in phases: a bisection of the depth buffer, then the best with write-combining");
@@ -806,24 +818,37 @@ static int draw(void)
     ring_tail = RD(RING_TAIL(RCS));
     build_state();                                  /* the shader and the rest: once */
 
-    for (phase = 0; phase < 7; phase++) {
-        /* variant, w = 1?, frames, write-combining?; the last uses the best that worked */
-        static const int plan[7][4] = {
-            { 0, 0, 60, 0 }, { 0, 1, 60, 0 }, { V_FINAL_FLUSH, 0, 60, 0 }, { V_DEPTH_PACKETS, 0, 60, 0 },
-            { V_DEPTH_PACKETS | V_DEPTH_TEST, 0, 60, 0 }, { 7, 0, 60, 0 }, { -1, 0, 240, 1 } };
+    for (phase = 0; phase < 8; phase++) {
+        /* shape (0 = the old triangle routine), variant, w = 1?, frames, write-combining?, fixed target */
+        static const int plan[8][6] = {
+            { 0, 0, 0, 30, 0, 0 },      /* the triangle exactly as it ran before, on screen 0 */
+            { 0, 0, 0, 30, 0, -1 },     /* the same, alternating screens */
+            { 1, 0, 0, 30, 0, -1 },     /* the triangle in the cube's vertex format */
+            { 2, 0, 0, 30, 0, -1 },     /* the full-screen background alone */
+            { 3, 0, 0, 60, 0, -1 },     /* background and cube, no depth */
+            { 3, 7, 0, 60, 0, -1 },     /* with the depth buffer */
+            { -1, 0, 0, 240, 1, -1 },   /* the best that worked, write-combining */
+            { -1, 0, 0, 0, 0, -1 } };
         unsigned frames = 0, gpu_total = 0, wait_total = 0, gpu_max = 0, bytes = 0;
         uint64_t t_phase = rdtsc();
         float ax = 0.5f, ay = 0.0f;
-        int variant = plan[phase][0], w_one = plan[phase][1], want = plan[phase][2];
-        if (variant < 0) { if (best_variant < 0) break; variant = best_variant; }
-        if (plan[phase][3]) WR(PPAT_LO, (RD(PPAT_LO) & 0xFFFFFF00u) | 0x01u);   /* entry 0: write-combining */
+        int shape = plan[phase][0], variant = plan[phase][1], w_one = plan[phase][2], want = plan[phase][3];
+        if (!want) break;
+        if (shape < 0) { if (best_shape < 0) break; shape = best_shape; variant = best_variant; }
+        if (plan[phase][4]) WR(PPAT_LO, (RD(PPAT_LO) & 0xFFFFFF00u) | 0x01u);   /* entry 0: write-combining */
         hung = 0;
         while (frames < (unsigned)want) {
             unsigned gpu_us, t_wait;
             uint64_t tw;
-            int target = cur ^ 1;
-            bytes = build_frame(screen_gpu2[target], ax, ay, 60 + (phase & 3), w_one, stamp, variant);
-            if (run_frame(stamp, &gpu_us) != 0) { hung = 1; note("phase %d (variant %d) frame %u: no completion after %u us", phase, variant, frames, gpu_us); dump_engine("stalled"); break; }
+            int target = plan[phase][5] >= 0 ? plan[phase][5] : cur ^ 1;
+            if (shape == 0) {
+                screen_gpu = screen_gpu2[target];
+                bytes = build_batch(1600, 300, 2666, 1500, 533, 1500);
+                stamp = 0xC0FFEE01u;
+            } else {
+                bytes = build_frame(screen_gpu2[target], ax, ay, 60 + (phase & 3), w_one, stamp, variant, shape);
+            }
+            if (run_frame(stamp, &gpu_us) != 0) { hung = 1; note("phase %d (shape %d, variant %d) frame %u: no completion after %u us", phase, shape, variant, frames, gpu_us); dump_engine("stalled"); break; }
             stamp++;
             gpu_total += gpu_us;
             if (gpu_us > gpu_max) gpu_max = gpu_us;
@@ -839,11 +864,11 @@ static int draw(void)
         }
         if (frames) {
             unsigned total = us_since(t_phase);
-            note("phase %d (variant %d, w %s, %s): %u frames in %u ms = %u fps; engine %u us a frame (worst %u), panel wait %u us; batch %u bytes",
-                 phase, variant, w_one ? "= 1" : "= depth", plan[phase][3] ? "write-combining" : "uncached", frames, total / 1000,
+            note("phase %d (shape %d, variant %d, w %s, %s): %u frames in %u ms = %u fps; engine %u us a frame (worst %u), panel wait %u us; batch %u bytes",
+                 phase, shape, variant, w_one ? "= 1" : "= depth", plan[phase][4] ? "write-combining" : "uncached", frames, total / 1000,
                  frames * 1000000u / (total ? total : 1), gpu_total / frames, gpu_max, wait_total / frames, bytes);
         }
-        if (!hung) best_variant = variant;
+        if (!hung) { best_shape = shape; best_variant = variant; }
         flush();
         if (hung) {                                 /* the engine back, the ring again, on to the next */
             reset_engine();
@@ -862,7 +887,7 @@ static int draw(void)
     first = RD(PPAT_LO);
     note("attribute table at the end %08X", first);
     flush();
-    note("best variant that ran: %d (1 depth packets, 2 depth test, 4 depth flush at the end)", best_variant);
+    note("best that ran: shape %d, variant %d (shapes: 0 old triangle, 1 triangle in new format, 2 background, 3 cube; variant 1 depth packets, 2 depth test, 4 depth flush)", best_shape, best_variant);
     flush();
     sys_getkey();                                   /* the last frame stays until a key */
     if (hung) reset_engine();
