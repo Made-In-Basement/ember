@@ -177,6 +177,17 @@ int2f_handler:
 .not_xms_entry:
         cmp     ax, 0x1687                      ; DPMI installation check
         jne     .not_dpmi
+        ; Only a program about to enter protected mode asks this.  Once it is
+        ; there it owns the interrupt table, and the speaker bridge's I/O
+        ; breakpoints - which live in the processor and stay armed across the
+        ; switch - would arrive at its handler instead of ours.  DOS/4GW
+        ; reports that as a fatal debug exception and stops.  So the bridge
+        ; stands down here; the shell starts it again at the next prompt.
+        push    ds
+        push    cs
+        pop     ds
+        call    spk_bridge_stop
+        pop     ds
         mov     ax, 0x0001                      ; non-zero: no DPMI host
         iret
 .not_dpmi:

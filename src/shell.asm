@@ -21,6 +21,7 @@ shell_main:
         jmp     .loop
 .prompt:
         call    xms_reset                       ; nothing is running: take it all back
+        call    spk_bridge_resume               ; and the speaker, if it was wanted
         call    print_prompt
         mov     di, cmdline
         mov     cx, CMDLINE_MAX
