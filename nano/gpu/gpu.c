@@ -238,7 +238,7 @@ static int map_pages(void)
     /* a slot above the stolen memory and below the aperture's reach */
     base = stolen_bytes > (96u << 20) ? stolen_bytes : (96u << 20);
     base = (base + (16u << 20)) & ~0xFFFFFu;
-    if (base + 3 * 4096 > (ggtt_bytes / 8) * 4096) { say("the table is too small for a slot at %08X", base); return -1; }
+    if ((base >> 12) + 3 > ggtt_bytes / 8) { say("the table is too small for a slot at %08X", base); return -1; }
     say("slot %08X: entries there read %08X%08X %08X%08X %08X%08X", base,
         (uint32_t)(ggtt[base >> 12] >> 32), (uint32_t)ggtt[base >> 12],
         (uint32_t)(ggtt[(base >> 12) + 1] >> 32), (uint32_t)ggtt[(base >> 12) + 1],
