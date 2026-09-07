@@ -105,7 +105,8 @@ void app_files(void);
 void app_music(void);
 int  music_tick(void);                  /* keeps the sound fed; 1 = redraw */
 void music_chime(void);                 /* the sound it makes on opening */
-int  music_active(void);                /* sound is playing: do not idle */
+int  music_active(void);                /* sound is playing */
+void music_feed(void);                  /* top the ring up; no analyser, no redraw */
 int  music_window(void);                /* its window, or -1 */
 void music_display_rect(int *x, int *y, int *w, int *h);
 void music_closed(int id);

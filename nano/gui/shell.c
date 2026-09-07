@@ -877,7 +877,7 @@ int main(int argc, char **argv)
             /* A full repaint at this size takes long enough that the sound
                chip can run dry while it happens; top the ring up again the
                moment the frame is out. */
-            if (music_active()) music_tick();
+            if (music_active()) music_feed();
         } else {
             /* Nothing to draw: wait for the next interrupt rather than
                spinning.  The 100 Hz heartbeat wakes us about every ten
@@ -888,7 +888,7 @@ int main(int argc, char **argv)
             unsigned t_idle = now_us();
             __asm__ volatile("hlt");
             shell_stats.idle_us += now_us() - t_idle;
-            if (music_active()) music_tick();       /* top the ring up right after waking */
+            if (music_active()) music_feed();       /* top the ring up right after waking */
         }
     }
 

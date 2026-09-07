@@ -485,7 +485,7 @@ void input_start_keyboard(void)
 
 /* A faster heartbeat so the loop can sleep between beats instead of
    spinning while sound plays: at 18 Hz a HLT would wake too rarely for the
-   analyser, so raise channel 0 to 100 Hz and hang a do-nothing handler on
+   analyser, so raise channel 0 to 200 Hz and hang a do-nothing handler on
    it.  Restored to the firmware's 18.2 Hz when the desktop ends, so a DOS
    program started afterwards keeps its usual clock. */
 static volatile unsigned desk_ticks;
@@ -493,7 +493,7 @@ static void timer_irq(void) { desk_ticks++; }
 
 void input_fast_timer(int on)
 {
-    unsigned div = on ? 11932u : 0u;            /* 1193182 / 100; 0 means 65536, 18.2 Hz */
+    unsigned div = on ? 5966u : 0u;             /* 1193182 / 200; 0 means 65536, 18.2 Hz */
     outb(0x43, 0x36);                           /* channel 0, lo/hi, rate generator */
     outb(0x40, (uint8_t)(div & 0xFF));
     outb(0x40, (uint8_t)(div >> 8));

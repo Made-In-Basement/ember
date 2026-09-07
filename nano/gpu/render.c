@@ -503,6 +503,9 @@ static void reset_engine(void)
     n = poll_until(GDRST, 1u << 1, 0, 2000000);
     note("reset: GDRST %08X (%s)", RD(GDRST), n < 0 ? "still set" : "done");
     WR(RING_CTL(RCS), 0);
+    WR(FORCEWAKE_MT, (1u << 16) | 1u);              /* awake again, in case the reset let it sleep */
+    poll_until(FORCEWAKE_ACK, 1, 1, 2000000);
+    WR(RC_CONTROL, 0);
 }
 
 /* ------------------------------------------------------------ section 8: the cube */
@@ -537,7 +540,10 @@ static void put_vertex(float *v, float x, float y, float z, float w, float u, fl
 }
 
 /* the frame's commands and vertices; returns the byte count */
-static uint32_t build_frame(uint32_t target_gpu, float ax, float ay, int bg_row, int w_is_one, uint32_t stamp)
+#define V_DEPTH_PACKETS 1
+#define V_DEPTH_TEST    2
+#define V_FINAL_FLUSH   4
+static uint32_t build_frame(uint32_t target_gpu, float ax, float ay, int bg_row, int w_is_one, uint32_t stamp, int variant)
 {
     static const float corner[8][3] = {
         {-1,-1,-1}, {1,-1,-1}, {1,1,-1}, {-1,1,-1}, {-1,-1,1}, {1,-1,1}, {1,1,1}, {-1,1,1} };
@@ -651,15 +657,19 @@ static uint32_t build_frame(uint32_t target_gpu, float ax, float ay, int bg_row,
     emit(GEN(3, 0, 0x4D)); emit(1u << 30);
     emit(GEN(3, 0, 0x4F)); emit((1u << 31) | (1u << 8));
     emit(GEN(3, 0, 0x0F)); emit(OFF_SCISSOR);
-    /* the depth buffer: three stalls first, as the manuals ask */
-    emit(GEN(3, 2, 0) | 4); emit(1u << 13); emit_zeros(4);
-    emit(GEN(3, 2, 0) | 4); emit(1u << 0); emit_zeros(4);
-    emit(GEN(3, 2, 0) | 4); emit(1u << 13); emit_zeros(4);
-    emit(GEN(3, 0, 0x05) | 6);                      /* DEPTH_BUFFER: 2D, D32_FLOAT, written */
-    emit((1u << 29) | (1u << 28) | (1u << 18) | (uint32_t)(scr_p * 4 - 1));
-    emit(depth_gpu); emit(0);
-    emit(((uint32_t)(scr_h - 1) << 18) | ((uint32_t)(scr_w - 1) << 4));
-    emit(0x18u); emit(0); emit(0);
+    if (variant & V_DEPTH_PACKETS) {
+        /* the depth buffer: three stalls first, as the manuals ask */
+        emit(GEN(3, 2, 0) | 4); emit(1u << 13); emit_zeros(4);
+        emit(GEN(3, 2, 0) | 4); emit(1u << 0); emit_zeros(4);
+        emit(GEN(3, 2, 0) | 4); emit(1u << 13); emit_zeros(4);
+        emit(GEN(3, 0, 0x05) | 6);                  /* DEPTH_BUFFER: 2D, D32_FLOAT, written */
+        emit((1u << 29) | (1u << 28) | (1u << 18) | (uint32_t)(scr_p * 4 - 1));
+        emit(depth_gpu); emit(0);
+        emit(((uint32_t)(scr_h - 1) << 18) | ((uint32_t)(scr_w - 1) << 4));
+        emit(0x18u); emit(0); emit(0);
+    } else {
+        emit(GEN(3, 0, 0x05) | 6); emit_zeros(7);   /* no depth buffer, as the triangle had */
+    }
     emit(GEN(3, 0, 0x07) | 3); emit_zeros(4);
     emit(GEN(3, 0, 0x06) | 3); emit_zeros(4);
     emit(GEN(3, 0, 0x04) | 1); emit(0); emit(1);
@@ -674,14 +684,14 @@ static uint32_t build_frame(uint32_t target_gpu, float ax, float ay, int bg_row,
     emit(GEN(3, 0, 0x4B)); emit(4);
     emit(GEN(3, 0, 0x49) | 1); emit(0); emit(0);
     /* the background: depth ALWAYS, writing 1.0 everywhere */
-    emit(GEN(3, 0, 0x4E) | 1); emit(3u); emit(0);
+    emit(GEN(3, 0, 0x4E) | 1); emit((variant & V_DEPTH_TEST) ? 3u : 0u); emit(0);
     emit(GEN(3, 3, 0) | 5); emit(0); emit(6); emit(0); emit(1); emit(0); emit(0);
     /* the cube: depth LESS */
-    emit(GEN(3, 0, 0x4E) | 1); emit(3u | (2u << 5)); emit(0);
+    emit(GEN(3, 0, 0x4E) | 1); emit((variant & V_DEPTH_TEST) ? (3u | (2u << 5)) : 0u); emit(0);
     emit(GEN(3, 3, 0) | 5); emit(0); emit(36); emit(6); emit(1); emit(0); emit(0);
-    /* done: flush the target and the depth, then say so */
+    /* done: flush the target (and the depth, when asked), then say so */
     emit(GEN(3, 2, 0) | 4);
-    emit((1u << 12) | (1u << 0) | (1u << 20) | (1u << 14) | (1u << 24));
+    emit((1u << 12) | ((variant & V_FINAL_FLUSH) ? 1u : 0u) | (1u << 20) | (1u << 14) | (1u << 24));
     emit(scratch_gpu); emit(0);
     emit(stamp); emit(0);
     emit(0x05000000u);
@@ -722,12 +732,10 @@ static int draw(void)
 {
     struct vbe_mode m;
     struct vbe_info info;
-    int mode = -1, i, best_w = 0, k, cur = 0, hung = 0, phase;
+    int mode = -1, i, best_w = 0, k, cur = 0, hung = 0, phase, best_variant = -1;
     uint32_t stamp = 1, first;
-    static const char *phase_name[3] = { "uncached, w = depth", "uncached, w = 1", "write-combining, w = depth" };
-    static const int phase_row[3] = { 60, 61, 62 };
 
-    say("== 5. the cube");
+    say("== 5. the cube, in phases: a bisection of the depth buffer, then the best with write-combining");
     if (sys_vbe_info(&info) != 0) { say("no VESA"); return -1; }
     for (i = 0; i < info.mode_count; i++) {
         struct vbe_mode t;
@@ -763,17 +771,24 @@ static int draw(void)
     WR(PLANE_SURF(active_plane), screen_gpu2[0]);
     ring_tail = RD(RING_TAIL(RCS));
 
-    for (phase = 0; phase < 3 && !hung; phase++) {
+    for (phase = 0; phase < 7; phase++) {
+        /* variant, w = 1?, frames, write-combining?; the last uses the best that worked */
+        static const int plan[7][4] = {
+            { 0, 0, 60, 0 }, { 0, 1, 60, 0 }, { V_FINAL_FLUSH, 0, 60, 0 }, { V_DEPTH_PACKETS, 0, 60, 0 },
+            { V_DEPTH_PACKETS | V_DEPTH_TEST, 0, 60, 0 }, { 7, 0, 60, 0 }, { -1, 0, 240, 1 } };
         unsigned frames = 0, gpu_total = 0, wait_total = 0, gpu_max = 0, bytes = 0;
         uint64_t t_phase = rdtsc();
         float ax = 0.5f, ay = 0.0f;
-        if (phase == 2) WR(PPAT_LO, (RD(PPAT_LO) & 0xFFFFFF00u) | 0x01u);      /* entry 0: write-combining */
-        while (frames < 240) {
+        int variant = plan[phase][0], w_one = plan[phase][1], want = plan[phase][2];
+        if (variant < 0) { if (best_variant < 0) break; variant = best_variant; }
+        if (plan[phase][3]) WR(PPAT_LO, (RD(PPAT_LO) & 0xFFFFFF00u) | 0x01u);   /* entry 0: write-combining */
+        hung = 0;
+        while (frames < (unsigned)want) {
             unsigned gpu_us, t_wait;
             uint64_t tw;
             int target = cur ^ 1;
-            bytes = build_frame(screen_gpu2[target], ax, ay, phase_row[phase], phase == 1, stamp);
-            if (run_frame(stamp, &gpu_us) != 0) { hung = 1; note("phase %d frame %u: no completion after %u us", phase, frames, gpu_us); dump_engine("stalled"); break; }
+            bytes = build_frame(screen_gpu2[target], ax, ay, 60 + (phase & 3), w_one, stamp, variant);
+            if (run_frame(stamp, &gpu_us) != 0) { hung = 1; note("phase %d (variant %d) frame %u: no completion after %u us", phase, variant, frames, gpu_us); dump_engine("stalled"); break; }
             stamp++;
             gpu_total += gpu_us;
             if (gpu_us > gpu_max) gpu_max = gpu_us;
@@ -789,11 +804,18 @@ static int draw(void)
         }
         if (frames) {
             unsigned total = us_since(t_phase);
-            note("phase %d (%s): %u frames in %u ms = %u fps; engine %u us a frame (worst %u), waiting for the panel %u us; batch %u bytes",
-                 phase, phase_name[phase], frames, total / 1000, frames * 1000000u / (total ? total : 1),
-                 gpu_total / frames, gpu_max, wait_total / frames, bytes);
+            note("phase %d (variant %d, w %s, %s): %u frames in %u ms = %u fps; engine %u us a frame (worst %u), panel wait %u us; batch %u bytes",
+                 phase, variant, w_one ? "= 1" : "= depth", plan[phase][3] ? "write-combining" : "uncached", frames, total / 1000,
+                 frames * 1000000u / (total ? total : 1), gpu_total / frames, gpu_max, wait_total / frames, bytes);
         }
+        if (!hung) best_variant = variant;
         flush();
+        if (hung) {                                 /* the engine back, the ring again, on to the next */
+            reset_engine();
+            if (start_ring() != 0) { note("the ring would not restart"); break; }
+            ring_tail = RD(RING_TAIL(RCS));
+            stamp += 16;
+        }
     }
     {
         int cx = scr_w / 2, cy = scr_h / 2;
@@ -804,6 +826,8 @@ static int draw(void)
     }
     first = RD(PPAT_LO);
     note("attribute table at the end %08X", first);
+    flush();
+    note("best variant that ran: %d (1 depth packets, 2 depth test, 4 depth flush at the end)", best_variant);
     flush();
     sys_getkey();                                   /* the last frame stays until a key */
     if (hung) reset_engine();

@@ -62,7 +62,7 @@
 
 #define SWEEP_FROM       0xFE000000u
 #define SWEEP_TO         0xFE400000u
-#define POLL_MS          6
+#define POLL_MS          4
 #define PAD_SCALE        2              /* pad counts to pixels */
 
 int touch_present;
@@ -460,7 +460,9 @@ static void poll_device(struct hid_dev *d)
             b[i] = (uint8_t)rd(d, IC_DATA_CMD);
         d->busy = 0;
         report(d, b, d->read_n);
-        return;
+        /* and the next read goes out now: the loop sleeps between passes,
+           so waiting for another pass to issue it would halve the rate */
+        if (now - d->last_issue_ms < POLL_MS) return;
     }
 
     if (now - d->last_issue_ms < POLL_MS) return;

@@ -449,6 +449,13 @@ int music_active(void)
     return playing != -1 && !paused;
 }
 
+/* keep the ring fed and nothing else: for the moments between frames
+   where a redraw decision has already been made */
+void music_feed(void)
+{
+    if (playing >= 0 && !paused) audio_pump();
+}
+
 void music_closed(int id)
 {
     if (id == win_id) {

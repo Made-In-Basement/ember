@@ -3,10 +3,10 @@
 #ifndef GPU_H
 #define GPU_H
 
-/* Point the display at buffer a, one of two page-aligned blocks of w x h
+/* Point the display at buffer a, one of three page-aligned blocks of w x h
    pixels in ordinary memory, `pitch` bytes a row.  0 when the display now
    reads it; otherwise nothing has changed and the caller keeps copying. */
-int  gpu_open(uint32_t *a, uint32_t *b, int w, int h, int pitch);
+int  gpu_open(uint32_t *a, uint32_t *b, uint32_t *c, int w, int h, int pitch);
 void gpu_close(void);                   /* the display back to the firmware's surface */
 int  gpu_active(void);
 
@@ -14,9 +14,10 @@ int  gpu_active(void);
    its cache lines are written back. */
 void gpu_flush(const uint32_t *buf, int x, int y, int w, int h);
 
-/* show buffer 0 or 1 from the next vertical blank; whether it shows yet */
+/* show a buffer from the next vertical blank; which one shows right now */
 void gpu_flip(int which);
 int  gpu_flip_done(void);
+int  gpu_shown(void);
 
 /* the pointer as a sprite: up to 64x64 ARGB, with its hot spot */
 void gpu_cursor_image(const uint32_t *argb, int w, int h, int hot_x, int hot_y);

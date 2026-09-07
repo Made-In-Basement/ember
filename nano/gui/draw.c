@@ -23,9 +23,11 @@ uint32_t *back;
 static uint8_t *fb;                     /* the card's memory */
 static int fb_pitch, fb_bpp;
 static int direct;                      /* the display scans our buffers itself: nothing to copy */
-static uint32_t *bufs[2];               /* the two: `back` is the one being drawn */
-static int cur, flip_pending;
-static int pd_x0, pd_y0, pd_x1, pd_y1;  /* what the last frame drew: the other buffer lacks it */
+static uint32_t *bufs[3];               /* three: one shown, one asked for, one being drawn (`back`) */
+static int cur, requested;              /* the one being drawn; the one last handed to the display */
+static int last_frame[3], frame_no;     /* each buffer is level with this frame; frames presented */
+static struct { int x0, y0, x1, y1, frame; } hist[4];   /* what recent frames changed */
+static int hist_n;
 static int dmg_x0, dmg_y0, dmg_x1, dmg_y1;      /* what changed */
 static int cx0, cy0, cx1, cy1;                  /* the clip rectangle */
 
@@ -98,14 +100,18 @@ int draw_open(int want_w, int want_h)
        card's memory, made write-combining. */
     if (fb_bpp == 32) {
         uint32_t *second = malloc((size_t)scr_w * scr_h * 4 + 4096);
-        if (second) {
+        uint32_t *third = malloc((size_t)scr_w * scr_h * 4 + 4096);
+        if (second && third) {
             bufs[1] = (uint32_t *)(((uint32_t)second + 4095) & ~4095u);
-            if (gpu_open(bufs[0], bufs[1], scr_w, scr_h, scr_w * 4) == 0) {
+            bufs[2] = (uint32_t *)(((uint32_t)third + 4095) & ~4095u);
+            if (gpu_open(bufs[0], bufs[1], bufs[2], scr_w, scr_h, scr_w * 4) == 0) {
                 direct = 1;
-                cur = 1;                /* buffer 0 is on the screen: the first frame is drawn into 1 */
+                requested = 0;          /* buffer 0 is on the screen: the first frame is drawn into 1 */
+                cur = 1;
                 back = bufs[1];
-            } else { free(second); bufs[1] = 0; }
+            }
         }
+        if (!direct) { if (second) free(second); if (third) free(third); bufs[1] = bufs[2] = 0; }
     }
     if (!direct)
         fb_write_combine(m.framebuffer, (uint32_t)m.pitch * m.height);
@@ -128,29 +134,43 @@ void draw_close(void)
 
 int draw_direct(void) { return direct; }
 
-/* Before anything is drawn: the buffer about to be drawn into must have
-   left the screen, and it lacks whatever the last frame drew into the
-   other one, so that is copied across (unless everything is about to be
-   redrawn anyway) and marked to be flushed with this frame. */
+/* Before anything is drawn: pick a buffer that is neither on the screen
+   nor asked for, so there is never a wait; copy into it what the frames
+   since it was last complete changed (from the newest complete buffer),
+   unless everything is about to be redrawn; mark that to be flushed too. */
 void draw_begin(int full_redraw_coming)
 {
+    int shown, i, pick = -1, best = -1, x0 = scr_w, y0 = scr_h, x1 = 0, y1 = 0, all = 0;
     if (!direct) return;
-    if (flip_pending) {
-        int n;
-        for (n = 0; n < 800000 && !gpu_flip_done(); n++) ;      /* the next vertical blank, within 50 ms */
-        flip_pending = 0;
+    shown = gpu_shown();
+    for (i = 0; i < 3; i++) {
+        if (i == shown || i == requested) continue;
+        if (last_frame[i] > best) { best = last_frame[i]; pick = i; }
     }
-    if (!full_redraw_coming && pd_x1 > pd_x0 && pd_y1 > pd_y0) {
-        const uint32_t *src = bufs[cur ^ 1];
-        int y, n = (pd_x1 - pd_x0) * 4;
-        for (y = pd_y0; y < pd_y1; y++)
-            memcpy(back + (size_t)y * scr_w + pd_x0, src + (size_t)y * scr_w + pd_x0, (size_t)n);
-        if (pd_x0 < dmg_x0) dmg_x0 = pd_x0;
-        if (pd_y0 < dmg_y0) dmg_y0 = pd_y0;
-        if (pd_x1 > dmg_x1) dmg_x1 = pd_x1;
-        if (pd_y1 > dmg_y1) dmg_y1 = pd_y1;
+    if (pick >= 0) cur = pick;
+    back = bufs[cur];
+    if (!full_redraw_coming && cur != requested) {
+        if (frame_no - last_frame[cur] > 4) all = 1;            /* older than the history reaches */
+        for (i = 0; i < 4 && !all; i++)
+            if (hist[i].frame > last_frame[cur]) {
+                if (hist[i].x0 < x0) x0 = hist[i].x0;
+                if (hist[i].y0 < y0) y0 = hist[i].y0;
+                if (hist[i].x1 > x1) x1 = hist[i].x1;
+                if (hist[i].y1 > y1) y1 = hist[i].y1;
+            }
+        if (all) { x0 = 0; y0 = 0; x1 = scr_w; y1 = scr_h; }
+        if (x1 > x0 && y1 > y0) {
+            const uint32_t *src = bufs[requested];
+            int y, n = (x1 - x0) * 4;
+            for (y = y0; y < y1; y++)
+                memcpy(back + (size_t)y * scr_w + x0, src + (size_t)y * scr_w + x0, (size_t)n);
+            if (x0 < dmg_x0) dmg_x0 = x0;
+            if (y0 < dmg_y0) dmg_y0 = y0;
+            if (x1 > dmg_x1) dmg_x1 = x1;
+            if (y1 > dmg_y1) dmg_y1 = y1;
+        }
     }
-    pd_x0 = pd_y0 = pd_x1 = pd_y1 = 0;
+    last_frame[cur] = frame_no;                         /* level with the newest, once this frame is drawn */
 }
 
 /* ---------------------------------------------------------------- damage */
@@ -194,12 +214,15 @@ void draw_present(void)
            from its next blank, and drawing moves to the other one */
         gpu_flush(back, dmg_x0, dmg_y0, dmg_x1 - dmg_x0, dmg_y1 - dmg_y0);
         gpu_flip(cur);
-        flip_pending = 1;
-        pd_x0 = dmg_x0; pd_y0 = dmg_y0; pd_x1 = dmg_x1; pd_y1 = dmg_y1;
-        cur ^= 1;
-        back = bufs[cur];
+        requested = cur;
+        frame_no++;
+        last_frame[cur] = frame_no;
+        hist[hist_n % 4].x0 = dmg_x0; hist[hist_n % 4].y0 = dmg_y0;
+        hist[hist_n % 4].x1 = dmg_x1; hist[hist_n % 4].y1 = dmg_y1;
+        hist[hist_n % 4].frame = frame_no;
+        hist_n++;
         dmg_x0 = scr_w; dmg_y0 = scr_h; dmg_x1 = 0; dmg_y1 = 0;
-        return;
+        return;                                          /* draw_begin() picks the next buffer */
     }
     for (y = dmg_y0; y < dmg_y1; y++) {
         const uint32_t *src = back + (size_t)y * scr_w + dmg_x0;
