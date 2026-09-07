@@ -907,6 +907,7 @@ static int draw(void)
     flush();
     note("best that ran: shape %d, variant %d (shapes: 0 old triangle, 1 triangle in new format, 2 background, 3 cube; variant 1 depth packets, 2 depth test, 4 depth flush)", best_shape, best_variant);
     flush();
+    while (sys_kbhit()) sys_getkey();               /* keys pressed during the phases: forgotten */
     sys_getkey();                                   /* the last frame stays until a key */
     if (hung) reset_engine();
     WR(PLANE_SURF(active_plane), 0);
