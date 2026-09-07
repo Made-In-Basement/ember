@@ -105,10 +105,20 @@ static int nlater;
 static void note(const char *fmt, ...)
 {
     va_list ap;
+    int n;
     if (nlater >= 12) return;
     va_start(ap, fmt);
-    vsnprintf(later[nlater++], 200, fmt, ap);
+    n = vsnprintf(later[nlater], 200 - 3, fmt, ap);
     va_end(ap);
+    if (n < 0) n = 0;
+    if (n > 200 - 3) n = 200 - 3;
+    if (out_n + n + 2 < (int)sizeof out) {
+        memcpy(out + out_n, later[nlater], n);
+        out_n += n;
+        out[out_n++] = '\r';
+        out[out_n++] = '\n';
+    }
+    nlater++;
 }
 
 static int poll_until(uint32_t reg, uint32_t mask, uint32_t want, int loops)
@@ -445,16 +455,6 @@ static void show_cursor(void)
          RD(CUR_CNTR(active_plane)), RD(CUR_BASE(active_plane)), RD(CUR_POS(active_plane)));
 }
 
-/* the four attributes tried for the engine's writes: the firmware's own
-   mapping (write-back), then ours as uncached, write-combining, write-through */
-struct trial { const char *name; uint32_t gpu, flags; int y; };
-static struct trial trials[4] = {
-    { "firmware WB",   0,           0,     100 },
-    { "uncached",      0x08000000u, 0x1Bu, 400 },
-    { "write-combine", 0x0A000000u, 0x8Bu, 700 },
-    { "write-through", 0x0C000000u, 0x93u, 1000 },
-};
-
 /* how many of a grid of 800 samples inside a rectangle are amber, as seen
    through the given view of the screen */
 static int count_amber(volatile uint32_t *view, uint32_t pitch, int y0)
@@ -468,13 +468,51 @@ static int count_amber(volatile uint32_t *view, uint32_t pitch, int y0)
 
 static void wbinvd(void) { __asm__ volatile("wbinvd" ::: "memory"); }
 
+/* the commands: a 400x200 amber fill at (100,y) through the given mapping;
+   a flush, with extra bits if wanted.  Each returns the dwords it wrote. */
+static int fill_cmd(uint32_t *c, uint32_t dst, uint32_t stride, uint32_t tiled, int y)
+{
+    c[0] = (2u << 29) | (0x50u << 22) | (3u << 20) | 5u;    /* XY_COLOR_BLT */
+    c[1] = (3u << 24) | (0xF0u << 16) | (tiled ? 1u << 11 : 0) | (stride & 0xFFFF);
+    c[2] = ((uint32_t)y << 16) | 100u;
+    c[3] = ((uint32_t)(y + 200) << 16) | 500u;
+    c[4] = dst;
+    c[5] = 0;
+    c[6] = 0xFFF0A020u;
+    return 7;
+}
+
+static int flush_cmd(uint32_t *c, uint32_t extra)
+{
+    c[0] = (0x26u << 23) | 2u | extra;                      /* MI_FLUSH_DW */
+    c[1] = 0;
+    c[2] = 0;
+    c[3] = 0;
+    return 4;
+}
+
+/* ndw dwords were written at the tail: hand them over, wait for the head */
+static int run_ring(uint32_t *tail, int ndw)
+{
+    cache_flush(ring, 4096);
+    *tail += (uint32_t)ndw * 4;
+    WR(RING_TAIL(BCS), *tail);
+    return poll_until(RING_HEAD(BCS), 0x1FFFFC, *tail, 4000000);
+}
+
+static void moment(void)
+{
+    int k;
+    for (k = 0; k < 3000000; k++) (void)RD(RING_HEAD(BCS));
+}
+
 static int blit(void)
 {
     struct vbe_mode m;
-    int mode = pick_mode(&m), n, ok = 0, t;
-    uint32_t surf, stride, tiled, tail, *cmd, phys;
-    volatile uint32_t *fb, *dram;
-    say("== 7. rectangles from the blitter, through four cache attributes");
+    int mode = pick_mode(&m), n, r, k;
+    uint32_t surf, stride, tiled, tail = 32, *c, phys, alias = 0x08000000u, ppat0;
+    volatile uint32_t *fb;
+    say("== 7. three stages of rectangles; a look after each");
     if (mode < 0) { say("no 32-bit linear mode 800 or wider"); return -1; }
     say("setting mode %04X: %ux%u, %u bpp, pitch %u, framebuffer %08X", mode, m.width, m.height, m.bpp, m.pitch, m.framebuffer);
     if (sys_set_vbe_mode(mode, 1) != 0) { say("the mode would not set"); return -1; }
@@ -484,69 +522,62 @@ static int blit(void)
     stride = RD(PLANE_STRIDE(active_plane));
     tiled = RD(PLANE_CNTR(active_plane)) & (1 << 10);
     phys = (uint32_t)ggtt[surf >> 12] & 0xFFFFF000u;
+    fb = (volatile uint32_t *)m.framebuffer;
     say("the surface: GPU address %08X, physical %08X, aperture %08X", surf, phys, m.framebuffer);
-    trials[0].gpu = surf;
 
-    /* the attribute table: 3 uncached, 4 write-back LLC, 5 write-combining, 6 write-through */
-    WR(PPAT_LO, RD(PPAT_LO) & 0x00FFFFFFu);
-    WR(PPAT_HI, (RD(PPAT_HI) & 0xFF000000u) | 0x00020107u);
-    say("attribute table now %08X %08X", RD(PPAT_LO), RD(PPAT_HI));
-
-    /* three more mappings of the screen's pages */
+    /* the screen's pages mapped again, with cache index 3 */
     {
         uint32_t npages = (m.pitch * m.height + 4095) / 4096, i;
-        for (t = 1; t < 4; t++)
-            for (i = 0; i < npages; i++)
-                ggtt[(trials[t].gpu >> 12) + i] = (ggtt[(surf >> 12) + i] & ~0xFFFull) | trials[t].flags;
+        for (i = 0; i < npages; i++)
+            ggtt[(alias >> 12) + i] = (ggtt[(surf >> 12) + i] & ~0xFFFull) | PTE_UNCACHED;
         WR(GFX_FLSH_CNTL, 1);
-        say("the screen mapped three more times, %u pages each", npages);
     }
+    show_cursor();
 
-    /* four XY_COLOR_BLT fills, one per mapping, then a flush */
-    cmd = ring + 8;                                 /* after the eight no-ops */
-    for (t = 0; t < 4; t++) {
-        uint32_t *c = cmd + t * 7;
-        c[0] = (2u << 29) | (0x50u << 22) | (3u << 20) | 5u;
-        c[1] = (3u << 24) | (0xF0u << 16) | (tiled ? 1u << 11 : 0) | (stride & 0xFFFF);
-        c[2] = ((uint32_t)trials[t].y << 16) | 100u;
-        c[3] = ((uint32_t)(trials[t].y + 200) << 16) | 500u;
-        c[4] = trials[t].gpu;
-        c[5] = 0;
-        c[6] = 0xFFF0A020u;
-    }
-    cmd[28] = (0x26u << 23) | 2u;                   /* MI_FLUSH_DW */
-    cmd[29] = 0;
-    cmd[30] = 0;
-    cmd[31] = 0;
-    cache_flush(ring, 4096);
-    tail = 32 + 32 * 4;
-    WR(RING_TAIL(BCS), tail);
-    n = poll_until(RING_HEAD(BCS), 0x1FFFFC, tail, 4000000);
+    /* stage A: entry 0 of the attribute table, the one every firmware
+       mapping names, made uncached; two fills */
+    ppat0 = RD(PPAT_LO);
+    WR(PPAT_LO, ppat0 & 0xFFFFFF00u);
+    note("stage A: table %08X %08X (entry 0 uncached); fills at y=100 through the firmware mapping, y=400 through ours",
+         RD(PPAT_LO), RD(PPAT_HI));
+    c = ring + tail / 4;
+    n = fill_cmd(c, surf, stride, tiled, 100);
+    n += fill_cmd(c + n, alias, stride, tiled, 400);
+    n += flush_cmd(c + n, 0);
+    r = run_ring(&tail, n);
+    moment();
+    note("stage A: ring %s; through the aperture y=100: %d/800, y=400: %d/800", r < 0 ? "STALLED" : "ran",
+         count_amber(fb, m.pitch, 100), count_amber(fb, m.pitch, 400));
+    flush();
+    sys_getkey();                                   /* look 1 */
 
-    fb = (volatile uint32_t *)m.framebuffer;        /* the aperture: through the GPU */
-    dram = (volatile uint32_t *)phys;               /* the memory itself: what the display reads */
-    {
-        int k, ap[4], dr[4], dr2[4], dr3[4];
-        for (t = 0; t < 4; t++) { ap[t] = count_amber(fb, m.pitch, trials[t].y); dr[t] = count_amber(dram, m.pitch, trials[t].y); }
-        for (k = 0; k < 3000000; k++) (void)RD(RING_HEAD(BCS));   /* a moment later */
-        for (t = 0; t < 4; t++) dr2[t] = count_amber(dram, m.pitch, trials[t].y);
-        show_cursor();
-        sys_getkey();                               /* the first look */
-        wbinvd();                                   /* every cache in the machine, written back */
-        for (t = 0; t < 4; t++) dr3[t] = count_amber(dram, m.pitch, trials[t].y);
-        sys_getkey();                               /* the second look: did they fill in? */
-        WR(CUR_CNTR(active_plane), 0);
-        WR(CUR_BASE(active_plane), 0);
-        sys_set_video_mode(3);
-        for (k = 0; k < nlater; k++) say("%s", later[k]);
-        say("after the blits: head %08X tail %08X acthd %08X (%s)", RD(RING_HEAD(BCS)), RD(RING_TAIL(BCS)),
-            RD(RING_ACTHD(BCS)), n < 0 ? "the head did NOT reach the tail" : "the head reached the tail");
-        say("samples amber of 800: through the aperture / in memory at once / a moment later / after wbinvd");
-        for (t = 0; t < 4; t++)
-            say("  %-14s %3d / %3d / %3d / %3d", trials[t].name, ap[t], dr[t], dr2[t], dr3[t]);
-        ok = dr3[1] == 800 || dr3[2] == 800 || dr3[3] == 800;
-    }
-    return ok ? 0 : -1;
+    /* stage B: entry 0 write-back again; one fill, then the flush command
+       with its LLC bit */
+    WR(PPAT_LO, ppat0);
+    note("stage B: table %08X (entry 0 write-back again); a fill at y=700 through the firmware mapping, then MI_FLUSH_DW with bit 9",
+         RD(PPAT_LO));
+    c = ring + tail / 4;
+    n = fill_cmd(c, surf, stride, tiled, 700);
+    n += flush_cmd(c + n, 1u << 9);
+    c[n++] = 0;                                     /* MI_NOOP: an even count */
+    r = run_ring(&tail, n);
+    moment();
+    note("stage B: ring %s; through the aperture y=700: %d/800", r < 0 ? "STALLED" : "ran", count_amber(fb, m.pitch, 700));
+    flush();
+    sys_getkey();                                   /* look 2 */
+
+    /* stage C: the processor writes back every cache */
+    wbinvd();
+    note("stage C: wbinvd");
+    flush();
+    sys_getkey();                                   /* look 3 */
+
+    WR(CUR_CNTR(active_plane), 0);
+    WR(CUR_BASE(active_plane), 0);
+    sys_set_video_mode(3);
+    for (k = 0; k < nlater; k++) { sys_puts(later[k]); sys_puts("\r\n"); }
+    say("after it all: head %08X tail %08X acthd %08X", RD(RING_HEAD(BCS)), RD(RING_TAIL(BCS)), RD(RING_ACTHD(BCS)));
+    return 0;
 }
 
 static void stop_ring(void)
