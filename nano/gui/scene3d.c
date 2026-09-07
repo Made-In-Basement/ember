@@ -17,7 +17,6 @@
 #include "draw.h"
 #include "input.h"
 #include "shell.h"
-#include "gpu3d.h"
 
 #define PANEL       0x140F0A
 #define PANEL_LIT   0x2A2114
@@ -86,26 +85,8 @@ static const struct solid solids[] = {
 
 /* ------------------------------------------------------------ state */
 static int win_id = -1;
-static int shape, wireframe, speed = 3, use_gpu;
-static uint32_t shade(uint32_t base, int lit);
+static int shape, wireframe, speed = 3;
 
-/* The engine's one texture: four squares of an amber checker at four
-   brightnesses, so a face can be lit by choosing its square; and one
-   dark texel in the corner that the background is cleared to. */
-static void gpu_texture(void)
-{
-    static uint32_t px[64 * 64];
-    static const int bright[4] = { 90, 140, 200, 256 };
-    int x, y;
-    for (y = 0; y < 64; y++)
-        for (x = 0; x < 64; x++) {
-            int q = (y / 32) * 2 + x / 32, check = (((x % 32) / 8) + ((y % 32) / 8)) & 1;
-            uint32_t base = check ? 0xF0A020 : 0xB0741A;
-            px[y * 64 + x] = 0xFF000000u | shade(base, bright[q]);
-        }
-    px[63 * 64 + 63] = 0xFF120D08u;             /* the background */
-    gpu3d_texture(px);
-}
 static float ang_x, ang_y;
 static unsigned last_ms, frame_ms, shown_fps;
 static int frames_since, fps;
@@ -136,10 +117,10 @@ static void scene3d_draw(struct window *w)
     vgradient(ax, ay, aw, TOOL_H, PANEL_LIT, PANEL);
     fill(ax, ay + TOOL_H - 1, aw, 1, EDGE);
     {
-        static const char *labels[] = { "Shape", "Wire", "Slower", "Faster", "GPU" };
+        static const char *labels[] = { "Shape", "Wire", "Slower", "Faster" };
         int bx = ax + 10, k;
-        for (k = 0; k < 5; k++) {
-            int bw = k == 0 ? 130 : 92, lit = (k == 1 && wireframe) || (k == 4 && use_gpu && gpu3d_active());
+        for (k = 0; k < 4; k++) {
+            int bw = k == 0 ? 130 : 92, lit = (k == 1 && wireframe);
             round_fill(bx, ay + 6, bw, 32, 4, lit ? 0x4A3618 : 0x241B10);
             round_frame(bx, ay + 6, bw, 32, 4, lit ? AMBER : EDGE);
             if (k == 0) {
@@ -176,47 +157,6 @@ static void scene3d_draw(struct window *w)
         vx[i] = x1; vy[i] = y2; vz[i] = z2 + camz;
         sx[i] = cx + (int)(focal * scale * x1 / vz[i]);
         sy[i] = cy - (int)(focal * scale * y2 / vz[i]);
-    }
-
-    /* ---- on the engine: the faces as triangles, lit by their square ---- */
-    if (use_gpu && gpu3d_active()) {
-        static float verts[256 * 6];
-        int n = 0;
-        float near = camz - 1.8f, far = camz + 1.8f;
-        for (f = 0; f < s->nf && n + 6 <= 256; f++) {
-            const int *fc = &s->f[f * 5];
-            int a = fc[1], b = fc[2], c = fc[3], k, q;
-            float ux = vx[b] - vx[a], uy = vy[b] - vy[a], uz = vz[b] - vz[a];
-            float wx = vx[c] - vx[a], wy = vy[c] - vy[a], wz = vz[c] - vz[a];
-            float nx = uy * wz - uz * wy, ny = uz * wx - ux * wz, nz = ux * wy - uy * wx;
-            float len = fsqrt(nx * nx + ny * ny + nz * nz), lit, qx, qy;
-            if (len < 0.0001f) len = 1;
-            lit = (nx * -0.4f + ny * 0.5f + nz * -0.77f) / len;
-            if (lit < 0) lit = -lit;
-            q = (int)(lit * 3.99f);
-            qx = (q & 1) ? 0.52f : 0.02f;
-            qy = (q & 2) ? 0.52f : 0.02f;
-            for (k = 1; k + 1 < fc[0]; k++) {       /* a fan: 1 or 2 triangles */
-                int tri[3] = { fc[1], fc[1 + k], fc[2 + k] };
-                static const float fu[4] = { 0, 0.45f, 0.45f, 0 }, fv[4] = { 0, 0, 0.45f, 0.45f };
-                int corner[3] = { 0, k, k + 1 };
-                int m;
-                for (m = 0; m < 3; m++) {
-                    int v = tri[m];
-                    float z = vz[v], d = (1.0f / near - 1.0f / z) / (1.0f / near - 1.0f / far);
-                    float *o = verts + n * 6;
-                    o[0] = (float)sx[v] * z; o[1] = (float)sy[v] * z; o[2] = d * z; o[3] = z;
-                    o[4] = qx + fu[corner[m]]; o[5] = qy + fv[corner[m]];
-                    n++;
-                }
-            }
-        }
-        if (gpu3d_queue(ax, ay + TOOL_H, aw, ah - 30, verts, n, 63.5f / 64, 63.5f / 64) != 0)
-            gpu3d_note_refused(ax, ay + TOOL_H, aw, ah - 30, n);
-        snprintf(buf, sizeof buf, "%s, %d faces   %u fps   engine %u us at %u MHz", s->name, s->nf, shown_fps,
-                 gpu3d_last_us(), gpu3d_mhz());
-        text(F_SMALL, ax + 12, ay + w->h - text_height(F_SMALL) - 8, buf, TEXT_DIM);
-        return;
     }
 
     /* ---- a soft shadow under the shape, on the floor ---- */
@@ -285,18 +225,13 @@ static int scene3d_event(struct window *w, struct event *e)
 {
     if (e->type == EV_MOUSE_DOWN && e->b < TOOL_H) {
         int bx = 10, k, bw;
-        for (k = 0; k < 5; k++) {
+        for (k = 0; k < 4; k++) {
             bw = k == 0 ? 130 : 92;
             if (e->a >= bx && e->a < bx + bw) {
                 if (k == 0) shape = (shape + 1) % NSOLIDS;
                 else if (k == 1) wireframe = !wireframe;
                 else if (k == 2 && speed > 1) speed--;
                 else if (k == 3 && speed < 8) speed++;
-                else if (k == 4) {
-                    use_gpu = !use_gpu;
-                    if (use_gpu && !gpu3d_active() && gpu3d_open() == 0) gpu_texture();
-                    if (!gpu3d_active()) use_gpu = 0;
-                }
                 return 1;
             }
             bx += bw + 8;
@@ -307,12 +242,6 @@ static int scene3d_event(struct window *w, struct event *e)
         int ch = e->b;                              /* the character; e->a is the scan code */
         if (ch == ' ') { wireframe = !wireframe; return 1; }
         if (ch == 's' || ch == 'S') { shape = (shape + 1) % NSOLIDS; return 1; }
-        if (ch == 'g' || ch == 'G') {
-            use_gpu = !use_gpu;
-            if (use_gpu && !gpu3d_active() && gpu3d_open() == 0) gpu_texture();
-            if (!gpu3d_active()) use_gpu = 0;
-            return 1;
-        }
         if (e->a == K_LEFT && speed > 1) { speed--; return 1; }
         if (e->a == K_RIGHT && speed < 8) { speed++; return 1; }
     }
@@ -337,7 +266,7 @@ int scene3d_tick(void)
 }
 
 int  scene3d_window(void) { return win_id; }
-void scene3d_closed(int id) { if (id == win_id) { win_id = -1; use_gpu = 0; gpu3d_close(); } }
+void scene3d_closed(int id) { if (id == win_id) win_id = -1; }
 
 void app_scene3d(void)
 {
