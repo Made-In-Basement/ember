@@ -93,6 +93,23 @@ static uint32_t stolen_base, stolen_bytes;
 #define PLANE_STRIDE(p)     (0x70188 + (p) * 0x1000)
 #define PLANE_SURF(p)       (0x7019C + (p) * 0x1000)
 #define PLANE_OFFSET(p)     (0x701A4 + (p) * 0x1000)
+#define CUR_CNTR(p)         (0x70080 + (p) * 0x1000)
+#define CUR_BASE(p)         (0x70084 + (p) * 0x1000)
+#define CUR_POS(p)          (0x70088 + (p) * 0x1000)
+#define PPAT_LO             0x40E0
+#define PPAT_HI             0x40E4
+
+/* things learned while the screen is graphic, told once text is back */
+static char later[12][200];
+static int nlater;
+static void note(const char *fmt, ...)
+{
+    va_list ap;
+    if (nlater >= 12) return;
+    va_start(ap, fmt);
+    vsnprintf(later[nlater++], 200, fmt, ap);
+    va_end(ap);
+}
 
 static int poll_until(uint32_t reg, uint32_t mask, uint32_t want, int loops)
 {
@@ -208,17 +225,22 @@ static int wake(void)
 /* ------------------------------------------------------------ section 5: our pages */
 static uint32_t *ring, *hws, *scratch;  /* one page each, CPU addresses */
 static uint32_t ring_gpu, hws_gpu, scratch_gpu;
+static uint32_t *tile, *cursor;         /* 64x64 ARGB each: four pages, contiguous */
+static uint32_t tile_gpu, cursor_gpu;
 
-static uint32_t page_aligned(void)
+static uint32_t page_aligned(int pages)
 {
-    uint32_t p = (uint32_t)malloc(8192);
+    uint32_t p = (uint32_t)malloc((pages + 1) * 4096);
     return (p + 4095) & ~4095u;
 }
 
-static void map_page(uint32_t gpu, uint32_t phys)
+#define PTE_UNCACHED  0x1Bu             /* present, writable, cache index 3: bypass the caches */
+#define PTE_CACHED    0x03u             /* present, writable, cache index 0: what the firmware uses */
+
+static void map_page(uint32_t gpu, uint32_t phys, uint32_t flags)
 {
     uint32_t idx = gpu >> 12;
-    ggtt[idx] = (uint64_t)(phys | 0x1B);            /* present, writable, uncached */
+    ggtt[idx] = (uint64_t)(phys | flags);
 }
 
 static int map_pages(void)
@@ -226,10 +248,12 @@ static int map_pages(void)
     uint32_t base, i, e;
     volatile uint32_t *window;
     say("== 5. mapping three pages of ours for the engines");
-    ring = (uint32_t *)page_aligned();
-    hws = (uint32_t *)page_aligned();
-    scratch = (uint32_t *)page_aligned();
-    if (!ring || !hws || !scratch) { say("no memory"); return -1; }
+    ring = (uint32_t *)page_aligned(1);
+    hws = (uint32_t *)page_aligned(1);
+    scratch = (uint32_t *)page_aligned(1);
+    tile = (uint32_t *)page_aligned(4);
+    cursor = (uint32_t *)page_aligned(4);
+    if (!ring || !hws || !scratch || !tile || !cursor) { say("no memory"); return -1; }
     memset(ring, 0, 4096);
     memset(hws, 0, 4096);
     for (i = 0; i < 1024; i++) scratch[i] = 0xC0DE0000u + i;
@@ -246,10 +270,17 @@ static int map_pages(void)
     ring_gpu = base;
     hws_gpu = base + 4096;
     scratch_gpu = base + 8192;
-    map_page(ring_gpu, (uint32_t)ring);
-    map_page(hws_gpu, (uint32_t)hws);
-    map_page(scratch_gpu, (uint32_t)scratch);
+    map_page(ring_gpu, (uint32_t)ring, PTE_UNCACHED);
+    map_page(hws_gpu, (uint32_t)hws, PTE_UNCACHED);
+    map_page(scratch_gpu, (uint32_t)scratch, PTE_UNCACHED);
+    tile_gpu = base + 4 * 4096;                     /* cached: the coherency question */
+    cursor_gpu = base + 8 * 4096;                   /* uncached: the display reads it */
+    for (i = 0; i < 4; i++) {
+        map_page(tile_gpu + i * 4096, (uint32_t)tile + i * 4096, PTE_CACHED);
+        map_page(cursor_gpu + i * 4096, (uint32_t)cursor + i * 4096, PTE_UNCACHED);
+    }
     WR(GFX_FLSH_CNTL, 1);
+    say("cache attribute table: %08X %08X", RD(PPAT_LO), RD(PPAT_HI));
     e = (uint32_t)ggtt[scratch_gpu >> 12];
     say("wrote them: scratch entry reads back %08X (page %08X)", e, (uint32_t)scratch);
 
@@ -303,10 +334,106 @@ static int pick_mode(struct vbe_mode *m)
     for (i = 0; i < info.mode_count; i++) {
         struct vbe_mode t;
         if (sys_vbe_mode(info.modes[i], &t) != 0 || !t.framebuffer || t.bpp != 32) continue;
-        if (t.width > 1920 || t.width < 800) continue;
-        if (t.width > best_w) { best_w = t.width; best = info.modes[i]; *m = t; }
+        if (t.width < 800) continue;
+        if (t.width > best_w) { best_w = t.width; best = info.modes[i]; *m = t; }   /* the widest: what Ember runs */
     }
     return best;
+}
+
+/* ------------------------------------------------------------ section 8: a copy from our memory */
+/* The desktop would draw into ordinary cached memory and have the blitter
+   copy from there.  Does the blitter see what the processor just wrote,
+   without a cache flush?  Two copies of a checkerboard, the second after
+   changing it, read back through the framebuffer. */
+static void fill_tile(int phase)
+{
+    int x, y;
+    for (y = 0; y < 64; y++)
+        for (x = 0; x < 64; x++)
+            tile[y * 64 + x] = (((x >> 3) + (y >> 3) + phase) & 1) ? 0xFFF0A020u : 0xFF102040u;
+}
+
+static uint32_t copy_tail;
+
+static int copy_once(uint32_t surf, uint32_t stride, int dx, int dy)
+{
+    uint32_t *cmd = ring + copy_tail / 4;
+    int n;
+    cmd[0] = (2u << 29) | (0x53u << 22) | (3u << 20) | 8u;    /* XY_SRC_COPY_BLT */
+    cmd[1] = (3u << 24) | (0xCCu << 16) | (stride & 0xFFFF);  /* 32bpp, ROP SRCCOPY */
+    cmd[2] = ((uint32_t)dy << 16) | (uint32_t)dx;
+    cmd[3] = ((uint32_t)(dy + 64) << 16) | (uint32_t)(dx + 64);
+    cmd[4] = surf;
+    cmd[5] = 0;
+    cmd[6] = 0;                                     /* source from (0,0) */
+    cmd[7] = 256;                                   /* source pitch */
+    cmd[8] = tile_gpu;
+    cmd[9] = 0;
+    cmd[10] = (0x26u << 23) | 2u;                   /* MI_FLUSH_DW */
+    cmd[11] = 0;
+    cmd[12] = 0;
+    cmd[13] = 0;
+    cache_flush(cmd, 14 * 4);
+    copy_tail += 14 * 4;
+    WR(RING_TAIL(BCS), copy_tail);
+    n = poll_until(RING_HEAD(BCS), 0x1FFFFC, copy_tail, 4000000);
+    return n;
+}
+
+static void copy_tests(uint32_t surf, uint32_t stride, uint32_t tail, volatile uint32_t *fb, uint32_t pitch)
+{
+    int n, good, x, y;
+    copy_tail = tail;
+
+    /* first: the tile written, not flushed, copied to (600,100) */
+    fill_tile(0);
+    n = copy_once(surf, stride, 600, 100);
+    for (good = 1, y = 0; y < 64; y += 9)
+        for (x = 0; x < 64; x += 7)
+            if ((fb[(100 + y) * (pitch / 4) + 600 + x] & 0xFFFFFF) != (tile[y * 64 + x] & 0xFFFFFF)) good = 0;
+    note("copy 1 from cached memory, unflushed: %s (%s)", good ? "every sample matched" : "samples DIFFERED",
+         n < 0 ? "head did not reach the tail" : "ring ran");
+
+    /* second: the tile changed in place, still not flushed, copied to (700,100) */
+    fill_tile(1);
+    n = copy_once(surf, stride, 700, 100);
+    for (good = 1, y = 0; y < 64; y += 9)
+        for (x = 0; x < 64; x += 7)
+            if ((fb[(100 + y) * (pitch / 4) + 700 + x] & 0xFFFFFF) != (tile[y * 64 + x] & 0xFFFFFF)) good = 0;
+    note("copy 2 after changing it, unflushed: %s (%s)", good ? "every sample matched: coherent" : "samples DIFFERED: a flush is needed",
+         n < 0 ? "head did not reach the tail" : "ring ran");
+
+    /* third: flushed, for the record */
+    fill_tile(0);
+    cache_flush(tile, 64 * 64 * 4);
+    n = copy_once(surf, stride, 800, 100);
+    for (good = 1, y = 0; y < 64; y += 9)
+        for (x = 0; x < 64; x += 7)
+            if ((fb[(100 + y) * (pitch / 4) + 800 + x] & 0xFFFFFF) != (tile[y * 64 + x] & 0xFFFFFF)) good = 0;
+    note("copy 3 flushed: %s (%s)", good ? "every sample matched" : "samples DIFFERED",
+         n < 0 ? "head did not reach the tail" : "ring ran");
+}
+
+/* ------------------------------------------------------------ section 9: the hardware cursor */
+static void show_cursor(void)
+{
+    int x, y;
+    for (y = 0; y < 64; y++)
+        for (x = 0; x < 64; x++) {
+            int dx = x - 32, dy = y - 32, d2 = dx * dx + dy * dy;
+            uint32_t c = 0;
+            if (d2 < 26 * 26) c = 0xFFF0A020u;                  /* an amber disc */
+            else if (d2 < 30 * 30) c = 0xFF1A140Du;             /* with a dark rim */
+            if (d2 < 10 * 10) c = 0xFF1A140Du;                  /* and a hole */
+            cursor[y * 64 + x] = c;
+        }
+    cache_flush(cursor, 64 * 64 * 4);
+    note("cursor: cntr was %08X base %08X pos %08X", RD(CUR_CNTR(active_plane)), RD(CUR_BASE(active_plane)), RD(CUR_POS(active_plane)));
+    WR(CUR_CNTR(active_plane), 0x27);               /* 64x64, ARGB */
+    WR(CUR_POS(active_plane), (900u << 16) | 1500u);
+    WR(CUR_BASE(active_plane), cursor_gpu);         /* this write shows it */
+    note("cursor: set cntr %08X base %08X pos %08X: a ringed amber disc should sit right of centre",
+         RD(CUR_CNTR(active_plane)), RD(CUR_BASE(active_plane)), RD(CUR_POS(active_plane)));
 }
 
 static int blit(void)
@@ -354,9 +481,17 @@ static int blit(void)
     fb = (volatile uint32_t *)m.framebuffer;
     {
         uint32_t inside = fb[200 * (m.pitch / 4) + 300], outside = fb[400 * (m.pitch / 4) + 600];
+        int k;
         ok = (inside & 0xFFFFFF) == 0xF0A020 && (outside & 0xFFFFFF) != 0xF0A020;
+        if (n >= 0) {
+            copy_tests(surf, stride, tail, fb, m.pitch);
+            show_cursor();
+        }
         sys_getkey();                               /* leave it on the screen until a key */
+        WR(CUR_CNTR(active_plane), 0);              /* the cursor away again */
+        WR(CUR_BASE(active_plane), 0);
         sys_set_video_mode(3);
+        for (k = 0; k < nlater; k++) say("%s", later[k]);
         say("after the blit: head %08X tail %08X acthd %08X instdone %08X (%s)",
             RD(RING_HEAD(BCS)), RD(RING_TAIL(BCS)), RD(RING_ACTHD(BCS)), RD(RING_INSTDONE(BCS)),
             n < 0 ? "the head did NOT reach the tail" : "the head reached the tail");
