@@ -163,15 +163,21 @@ static void build_state(void)
     memcpy(b + OFF_KERNEL, ps_kernel, sizeof ps_kernel);
 }
 
+static void put_vertex(float *v, float x, float y, float z, float w, float u, float t)
+{
+    v[0] = x; v[1] = y; v[2] = z; v[3] = w; v[4] = u; v[5] = t;
+}
+
 static uint32_t *cmd;
 static void emit(uint32_t v) { *cmd++ = v; }
 static void emit_zeros(int n) { while (n--) emit(0); }
 
 /* the commands for one job; the vertices are already in place */
-static uint32_t build_batch(uint32_t target_gpu, int x, int y, int w, int h, int nverts)
+static uint32_t build_batch(uint32_t target_gpu, int tw, int th, int tpitch,
+                            int x, int y, int w, int h, int nverts)
 {
     uint8_t *b = (uint8_t *)batch;
-    surface_state((uint32_t *)(b + OFF_SS_RT), target_gpu, scr_w, scr_h, scr_w * 4);
+    surface_state((uint32_t *)(b + OFF_SS_RT), target_gpu, tw, th, tpitch);
     cmd = batch;
     emit(GEN(1, 1, 4));                             /* PIPELINE_SELECT: 3D */
     emit(GEN(0, 1, 2) | 1); emit_zeros(2);          /* STATE_SIP */
@@ -246,9 +252,9 @@ static uint32_t build_batch(uint32_t target_gpu, int x, int y, int w, int h, int
     emit(GEN(3, 2, 0) | 4); emit(1u << 0); emit_zeros(4);
     emit(GEN(3, 2, 0) | 4); emit(1u << 13); emit_zeros(4);
     emit(GEN(3, 0, 0x05) | 6);                      /* DEPTH_BUFFER: 2D, D32_FLOAT, written */
-    emit((1u << 29) | (1u << 28) | (1u << 18) | (uint32_t)(scr_w * 4 - 1));
+    emit((1u << 29) | (1u << 28) | (1u << 18) | (uint32_t)(tpitch - 1));
     emit(DEPTH_GPU); emit(0);
-    emit(((uint32_t)(scr_h - 1) << 18) | ((uint32_t)(scr_w - 1) << 4));
+    emit(((uint32_t)(th - 1) << 18) | ((uint32_t)(tw - 1) << 4));
     emit(0x18u); emit(0); emit(0);
     emit(GEN(3, 0, 0x07) | 3); emit_zeros(4);
     emit(GEN(3, 0, 0x06) | 3); emit_zeros(4);
@@ -279,6 +285,34 @@ static uint32_t build_batch(uint32_t target_gpu, int x, int y, int w, int h, int
     return (uint32_t)((uint8_t *)cmd - b);
 }
 
+/* hand the batch to the engine and wait for its completion word; the
+   microseconds it took, or -1 if it never came */
+static int submit(unsigned *took)
+{
+    uint32_t pos = ring_tail & 0xFFFu;
+    unsigned t0;
+    ring[pos / 4] = 0x18800001u;                    /* MI_BATCH_BUFFER_START, global table */
+    ring[pos / 4 + 1] = BATCH_GPU;
+    ring[pos / 4 + 2] = 0;
+    ring[pos / 4 + 3] = 0;
+    cache_flush(ring + pos / 4, 16);
+    scratch[0] = 0;
+    cache_flush(scratch, 64);
+    mfence();
+    ring_tail = (ring_tail + 16) & 0xFFFu;
+    t0 = now_us();
+    WR(RING_TAIL, ring_tail);
+    for (;;) {
+        uint32_t word;
+        cache_flush(scratch, 64);
+        mfence();
+        word = scratch[0];
+        *took = now_us() - t0;
+        if (word == stamp) { stamp++; return 0; }
+        if (*took > 200000) { stamp++; return -1; }
+    }
+}
+
 /* ---------------------------------------------------------------- the ring */
 static int start_ring(void)
 {
@@ -304,6 +338,15 @@ static int start_ring(void)
     return n < 0 ? -1 : 0;
 }
 
+static void reset_engine_quiet(void)
+{
+    WR(RING_RESET_CTL, (1u << 16) | 1u);
+    poll_until(RING_RESET_CTL, 2u, 2u, 200000);
+    WR(GDRST, 1u << 1);
+    poll_until(GDRST, 1u << 1, 0, 2000000);
+    WR(RING_CTL, 0);
+}
+
 static void reset_engine(void)
 {
     sys_logf("3d: stalled: head %08X tail %08X acthd %08X ipehr %08X instdone %08X eir %08X",
@@ -318,6 +361,61 @@ static void reset_engine(void)
     WR(RC_CONTROL, 0);
     if (start_ring() != 0) { active = 0; snprintf(note_buf, sizeof note_buf, "3D engine withdrawn: it would not restart"); }
     sys_logf("3d: reset; %s", active ? "ring restarted" : "ring would not restart");
+}
+
+/* ---------------------------------------------------------------- the self-test */
+/* Before the engine is allowed anywhere near a buffer the display is
+   scanning, it draws a small picture into ordinary memory of ours and the
+   processor checks the pixels.  If anything is wrong the engine is put
+   back to sleep and the desktop never notices; the log says how far it got. */
+#define TEST_GPU  0x18000000u
+#define TEST_W    64
+#define TEST_H    64
+
+static uint32_t *test_buf;
+
+static int self_test(void)
+{
+    float *vb = (float *)((uint8_t *)batch + OFF_VERTS);
+    unsigned took = 0;
+    uint32_t inside, corner;
+    int i;
+
+    for (i = 0; i < TEX_W * TEX_H; i++) tex[i] = 0xFF20C0A0u;    /* a colour nothing else uses */
+    tex[63 * TEX_W + 63] = 0xFF102030u;                          /* and the background texel */
+    cache_flush(tex, TEX_W * TEX_H * 4);
+    for (i = 0; i < TEST_W * TEST_H; i++) test_buf[i] = 0xFFFFFFFFu;
+    cache_flush(test_buf, TEST_W * TEST_H * 4);
+    mfence();
+
+    /* the clear over the whole target, then one triangle across its middle */
+    put_vertex(vb + 0, 0, 0, 1, 1, 63.5f / 64, 63.5f / 64);
+    put_vertex(vb + 6, TEST_W, 0, 1, 1, 63.5f / 64, 63.5f / 64);
+    put_vertex(vb + 12, TEST_W, TEST_H, 1, 1, 63.5f / 64, 63.5f / 64);
+    put_vertex(vb + 18, 0, 0, 1, 1, 63.5f / 64, 63.5f / 64);
+    put_vertex(vb + 24, TEST_W, TEST_H, 1, 1, 63.5f / 64, 63.5f / 64);
+    put_vertex(vb + 30, 0, TEST_H, 1, 1, 63.5f / 64, 63.5f / 64);
+    put_vertex(vb + 36, 4, 4, 0.5f, 1, 0.25f, 0.25f);
+    put_vertex(vb + 42, TEST_W - 4, 4, 0.5f, 1, 0.75f, 0.25f);
+    put_vertex(vb + 48, TEST_W / 2, TEST_H - 4, 0.5f, 1, 0.5f, 0.75f);
+    build_batch(TEST_GPU, TEST_W, TEST_H, TEST_W * 4, 0, 0, TEST_W, TEST_H, 3);
+    if (submit(&took) != 0) {
+        sys_logf("3d: the self-test never finished (%u us); head %08X acthd %08X ipehr %08X instdone %08X eir %08X",
+                 took, RD(RING_HEAD), RD(RING_ACTHD), RD(RING_IPEHR), RD(RING_INSTDONE), RD(RING_EIR));
+        snprintf(note_buf, sizeof note_buf, "3D engine: its own test never finished");
+        return -1;
+    }
+    cache_flush(test_buf, TEST_W * TEST_H * 4);
+    mfence();
+    inside = test_buf[(TEST_H / 2) * TEST_W + TEST_W / 2] & 0xFFFFFF;
+    corner = test_buf[1 * TEST_W + 1] & 0xFFFFFF;
+    sys_logf("3d: self-test ran in %u us; middle %06X (want 20C0A0), corner %06X (want 102030)",
+             took, inside, corner);
+    if (inside != 0x20C0A0u || corner != 0x102030u) {
+        snprintf(note_buf, sizeof note_buf, "3D engine: its own test drew %06X, not what was asked", inside);
+        return -1;
+    }
+    return 0;
 }
 
 /* ---------------------------------------------------------------- open, close */
@@ -335,8 +433,9 @@ int gpu3d_open(void)
         scratch = (uint32_t *)page_aligned(1);
         batch = (uint32_t *)page_aligned(4);
         tex = (uint32_t *)page_aligned(4);
+        test_buf = (uint32_t *)page_aligned(4);
         depth = (uint32_t *)page_aligned((scr_w * 4 * depth_rows + 4095) / 4096);
-        if (!ring || !hws || !scratch || !batch || !tex || !depth) {
+        if (!ring || !hws || !scratch || !batch || !tex || !test_buf || !depth) {
             snprintf(note_buf, sizeof note_buf, "3D engine: no memory for a %d MB depth buffer",
                      (int)(((unsigned)scr_w * 4 * depth_rows) >> 20));
             sys_logf("3d: could not allocate; depth wanted %u bytes", (unsigned)scr_w * 4 * depth_rows);
@@ -351,20 +450,38 @@ int gpu3d_open(void)
         gpu_map(SCRATCH_GPU, (uint32_t)scratch, 1);
         gpu_map(BATCH_GPU, (uint32_t)batch, 4);
         gpu_map(TEX_GPU, (uint32_t)tex, 4);
+        gpu_map(TEST_GPU, (uint32_t)test_buf, 4);
         gpu_map(DEPTH_GPU, (uint32_t)depth, (scr_w * 4 * depth_rows + 4095) / 4096);
         WR(GFX_FLSH_CNTL, 1);
+        sys_logf("3d: memory ready; ring %08X batch %08X tex %08X test %08X depth %08X (%d rows)",
+                 RING_GPU, BATCH_GPU, TEX_GPU, TEST_GPU, DEPTH_GPU, depth_rows);
     }
+    sys_log("3d: waking the render well");
     WR(FORCEWAKE_MT, (1u << 16) | 1u);
     n = poll_until(FORCEWAKE_ACK, 1, 1, 2000000);
-    if (n < 0) { snprintf(note_buf, sizeof note_buf, "3D engine: the render well would not wake"); return -1; }
+    if (n < 0) { snprintf(note_buf, sizeof note_buf, "3D engine: the render well would not wake"); sys_log("3d: no forcewake"); return -1; }
     WR(RC_CONTROL, 0);
     ppat_was = RD(PPAT_LO);
     WR(PPAT_LO, ppat_was & 0xFFFFFF00u);            /* entry 0 uncached: engine writes land in memory */
     /* The clock is left exactly as the firmware set it.  Raising it needs
        registers this machine has not confirmed, and a request built from a
        bad reading stalls the chip and takes the display down with it. */
-    if (start_ring() != 0) { snprintf(note_buf, sizeof note_buf, "3D engine: the ring would not run"); WR(PPAT_LO, ppat_was); WR(FORCEWAKE_MT, 1u << 16); return -1; }
+    sys_logf("3d: attribute table %08X, starting the ring", RD(PPAT_LO));
+    if (start_ring() != 0) {
+        snprintf(note_buf, sizeof note_buf, "3D engine: the ring would not run");
+        sys_logf("3d: the ring would not run; ctl %08X head %08X", RD(RING_CTL), RD(RING_HEAD));
+        WR(PPAT_LO, ppat_was);
+        WR(FORCEWAKE_MT, 1u << 16);
+        return -1;
+    }
     build_state();
+    if (self_test() != 0) {                         /* it does not get to touch the screen */
+        reset_engine_quiet();
+        WR(PPAT_LO, ppat_was);
+        WR(FORCEWAKE_MT, 1u << 16);
+        active = 0;
+        return -1;
+    }
     failures = 0;
     active = 1;
     snprintf(note_buf, sizeof note_buf, "3D engine ready at %u MHz", ((RD(RPSTAT1) >> 7) & 0x7F) * 50);
@@ -413,10 +530,6 @@ int gpu3d_queue(int x, int y, int w, int h, const float *verts, int n, float bg_
     return 0;
 }
 
-static void put_vertex(float *v, float x, float y, float z, float w, float u, float t)
-{
-    v[0] = x; v[1] = y; v[2] = z; v[3] = w; v[4] = u; v[5] = t;
-}
 
 void gpu3d_run(uint32_t *buffer)
 {
@@ -428,9 +541,7 @@ void gpu3d_run(uint32_t *buffer)
         struct job *j = &jobs[k];
         float *vb = (float *)((uint8_t *)batch + OFF_VERTS);
         float x0 = (float)j->x, y0 = (float)j->y, x1 = (float)(j->x + j->w), y1 = (float)(j->y + j->h);
-        uint32_t pos;
-        uint64_t t0;
-        unsigned waited = 0;
+        unsigned took = 0;
         /* the clear: the rectangle at the far plane, one texel */
         put_vertex(vb + 0, x0, y0, 1, 1, j->bg_u, j->bg_v);
         put_vertex(vb + 6, x1, y0, 1, 1, j->bg_u, j->bg_v);
@@ -439,35 +550,17 @@ void gpu3d_run(uint32_t *buffer)
         put_vertex(vb + 24, x1, y1, 1, 1, j->bg_u, j->bg_v);
         put_vertex(vb + 30, x0, y1, 1, 1, j->bg_u, j->bg_v);
         memcpy(vb + 36, j->v, (size_t)j->n * 6 * sizeof(float));
-        build_batch(target, j->x, j->y, j->w, j->h, j->n);
-        pos = ring_tail & 0xFFFu;
-        ring[pos / 4] = 0x18800001u;                /* MI_BATCH_BUFFER_START, global table */
-        ring[pos / 4 + 1] = BATCH_GPU;
-        ring[pos / 4 + 2] = 0;
-        ring[pos / 4 + 3] = 0;
-        cache_flush(ring + pos / 4, 16);
-        scratch[0] = 0;
-        cache_flush(scratch, 64);
-        mfence();
-        ring_tail = (ring_tail + 16) & 0xFFFu;
-        t0 = now_us();
-        WR(RING_TAIL, ring_tail);
-        for (;;) {
-            uint32_t word;
-            cache_flush(scratch, 64);
-            mfence();
-            word = scratch[0];
-            if (word == stamp) break;
-            waited = now_us() - (unsigned)t0;
-            if (waited > 100000) break;             /* a tenth of a second: it is not coming */
-        }
-        last_us = now_us() - (unsigned)t0;
-        if (waited > 100000) {
+        build_batch(target, scr_w, scr_h, scr_w * 4, j->x, j->y, j->w, j->h, j->n);
+        if (submit(&took) != 0) {
             failures++;
             reset_engine();
-            if (failures >= 3 && active) { active = 0; snprintf(note_buf, sizeof note_buf, "3D engine withdrawn after three stalls"); sys_log("3d: withdrawn"); }
+            if (failures >= 3 && active) {
+                active = 0;
+                snprintf(note_buf, sizeof note_buf, "3D engine withdrawn after three stalls");
+                sys_log("3d: withdrawn");
+            }
         }
-        stamp++;
+        last_us = took;
     }
     njobs = 0;
 }
