@@ -72,14 +72,38 @@ xms_init:
         sub     eax, ebx
         shr     eax, 10                         ; kilobytes
         mov     [xms_pool_size], eax
-        ; ---- one free block covering all of it ----
+.done:
+        pop     ds
+        pop     es
+        popa
+        ; fall through: the table starts as one free block of the whole pool
+
+; =============================================================================
+; xms_reset: forget every handle and make the pool one free block again.
+;
+;  Nothing here owns memory between commands: a program that ends without
+;  giving its blocks back would otherwise leave them held for good, and the
+;  next program to ask would be told there is none.  The shell calls this
+;  when it has the machine to itself.
+; =============================================================================
+xms_reset:
+        pusha
+        push    es
+        push    cs
+        pop     es
+        mov     di, xms_handle
+        mov     cx, XMS_HANDLES * XMS_HANDLE_SZ
+        xor     al, al
+        cld
+        rep     stosb
+        cmp     dword [xms_pool_size], 0
+        je      .none
         mov     eax, [xms_pool_base]
         mov     [xms_handle + XMS_H_BASE], eax
         mov     eax, [xms_pool_size]
         mov     [xms_handle + XMS_H_SIZE], eax
         mov     byte [xms_handle + XMS_H_STATE], 1      ; 1 = free block
-.done:
-        pop     ds
+.none:
         pop     es
         popa
         ret

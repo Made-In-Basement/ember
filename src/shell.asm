@@ -20,6 +20,7 @@ shell_main:
         call    run_batch_lines
         jmp     .loop
 .prompt:
+        call    xms_reset                       ; nothing is running: take it all back
         call    print_prompt
         mov     di, cmdline
         mov     cx, CMDLINE_MAX
