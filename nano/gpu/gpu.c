@@ -234,8 +234,12 @@ static uint32_t page_aligned(int pages)
     return (p + 4095) & ~4095u;
 }
 
-#define PTE_UNCACHED  0x1Bu             /* present, writable, cache index 3: bypass the caches */
-#define PTE_CACHED    0x03u             /* present, writable, cache index 0: what the firmware uses */
+/* a page-table entry's low bits: present, writable, and a cache index from
+   bits 3, 4 and 7.  The index picks an entry of the attribute table (PPAT),
+   which we program: 3 = uncached, 4 = write-back and coherent with the LLC. */
+#define PTE_UNCACHED  0x1Bu             /* index 3 */
+#define PTE_CACHED    0x03u             /* index 0: what the firmware uses */
+#define PTE_LLC       0x83u             /* index 4 */
 
 static void map_page(uint32_t gpu, uint32_t phys, uint32_t flags)
 {
@@ -276,11 +280,16 @@ static int map_pages(void)
     tile_gpu = base + 4 * 4096;                     /* cached: the coherency question */
     cursor_gpu = base + 8 * 4096;                   /* uncached: the display reads it */
     for (i = 0; i < 4; i++) {
-        map_page(tile_gpu + i * 4096, (uint32_t)tile + i * 4096, PTE_CACHED);
+        map_page(tile_gpu + i * 4096, (uint32_t)tile + i * 4096, PTE_LLC);
         map_page(cursor_gpu + i * 4096, (uint32_t)cursor + i * 4096, PTE_UNCACHED);
     }
     WR(GFX_FLSH_CNTL, 1);
+    /* the attribute table: entry 3 becomes uncached (0), entry 4 write-back
+       in the LLC (7); entries 0-2, which the firmware's mappings use, stay */
     say("cache attribute table: %08X %08X", RD(PPAT_LO), RD(PPAT_HI));
+    WR(PPAT_LO, RD(PPAT_LO) & 0x00FFFFFFu);
+    WR(PPAT_HI, (RD(PPAT_HI) & 0xFFFFFF00u) | 0x07u);
+    say("programmed:            %08X %08X (entry 3 uncached, entry 4 write-back LLC)", RD(PPAT_LO), RD(PPAT_HI));
     e = (uint32_t)ggtt[scratch_gpu >> 12];
     say("wrote them: scratch entry reads back %08X (page %08X)", e, (uint32_t)scratch);
 
@@ -355,7 +364,7 @@ static void fill_tile(int phase)
 
 static uint32_t copy_tail;
 
-static int copy_once(uint32_t surf, uint32_t stride, int dx, int dy)
+static int copy_once(uint32_t surf, uint32_t stride, int dx, int dy)   /* surf: the destination mapping */
 {
     uint32_t *cmd = ring + copy_tail / 4;
     int n;
@@ -385,31 +394,31 @@ static void copy_tests(uint32_t surf, uint32_t stride, uint32_t tail, volatile u
     int n, good, x, y;
     copy_tail = tail;
 
-    /* first: the tile written, not flushed, copied to (600,100) */
+    /* first: the tile written, not flushed, copied to (600,400) */
     fill_tile(0);
-    n = copy_once(surf, stride, 600, 100);
+    n = copy_once(surf, stride, 600, 400);
     for (good = 1, y = 0; y < 64; y += 9)
         for (x = 0; x < 64; x += 7)
-            if ((fb[(100 + y) * (pitch / 4) + 600 + x] & 0xFFFFFF) != (tile[y * 64 + x] & 0xFFFFFF)) good = 0;
-    note("copy 1 from cached memory, unflushed: %s (%s)", good ? "every sample matched" : "samples DIFFERED",
+            if ((fb[(400 + y) * (pitch / 4) + 600 + x] & 0xFFFFFF) != (tile[y * 64 + x] & 0xFFFFFF)) good = 0;
+    note("copy 1 from LLC-cached memory, unflushed: %s (%s)", good ? "every sample matched" : "samples DIFFERED",
          n < 0 ? "head did not reach the tail" : "ring ran");
 
-    /* second: the tile changed in place, still not flushed, copied to (700,100) */
+    /* second: the tile changed in place, still not flushed, copied to (700,400) */
     fill_tile(1);
-    n = copy_once(surf, stride, 700, 100);
+    n = copy_once(surf, stride, 700, 400);
     for (good = 1, y = 0; y < 64; y += 9)
         for (x = 0; x < 64; x += 7)
-            if ((fb[(100 + y) * (pitch / 4) + 700 + x] & 0xFFFFFF) != (tile[y * 64 + x] & 0xFFFFFF)) good = 0;
+            if ((fb[(400 + y) * (pitch / 4) + 700 + x] & 0xFFFFFF) != (tile[y * 64 + x] & 0xFFFFFF)) good = 0;
     note("copy 2 after changing it, unflushed: %s (%s)", good ? "every sample matched: coherent" : "samples DIFFERED: a flush is needed",
          n < 0 ? "head did not reach the tail" : "ring ran");
 
     /* third: flushed, for the record */
     fill_tile(0);
     cache_flush(tile, 64 * 64 * 4);
-    n = copy_once(surf, stride, 800, 100);
+    n = copy_once(surf, stride, 800, 400);
     for (good = 1, y = 0; y < 64; y += 9)
         for (x = 0; x < 64; x += 7)
-            if ((fb[(100 + y) * (pitch / 4) + 800 + x] & 0xFFFFFF) != (tile[y * 64 + x] & 0xFFFFFF)) good = 0;
+            if ((fb[(400 + y) * (pitch / 4) + 800 + x] & 0xFFFFFF) != (tile[y * 64 + x] & 0xFFFFFF)) good = 0;
     note("copy 3 flushed: %s (%s)", good ? "every sample matched" : "samples DIFFERED",
          n < 0 ? "head did not reach the tail" : "ring ran");
 }
@@ -440,7 +449,7 @@ static int blit(void)
 {
     struct vbe_mode m;
     int mode = pick_mode(&m), n, ok = 0;
-    uint32_t surf, stride, tiled, tail, *cmd;
+    uint32_t surf, stride, tiled, tail, *cmd, alias = 0x08000000u;
     volatile uint32_t *fb;
     say("== 7. a rectangle from the blitter");
     if (mode < 0) { say("no 32-bit linear mode between 800 and 1920 wide"); return -1; }
@@ -458,7 +467,18 @@ static int blit(void)
             ((uint32_t)e & 0xFFFFF000u) == m.framebuffer ? "they agree" : "they DIFFER");
     }
 
-    /* XY_COLOR_BLT: fill (100,100)-(500,300) with amber, then flush */
+    /* a second mapping of the same screen pages, uncached, for the engines
+       to write through: the firmware's own mapping is left as it is */
+    {
+        uint32_t npages = (m.pitch * m.height + 4095) / 4096, i;
+        for (i = 0; i < npages; i++)
+            ggtt[(alias >> 12) + i] = (ggtt[(surf >> 12) + i] & ~0xFFFull) | PTE_UNCACHED;
+        WR(GFX_FLSH_CNTL, 1);
+        say("the screen mapped again at %08X, uncached: %u pages", alias, npages);
+    }
+
+    /* two XY_COLOR_BLT fills: (100,100)-(500,300) through the firmware's
+       cached mapping, (100,400)-(500,600) through ours; then a flush */
     cmd = ring + 8;                                 /* after the eight no-ops */
     cmd[0] = (2u << 29) | (0x50u << 22) | (3u << 20) | 5u;
     cmd[1] = (3u << 24) | (0xF0u << 16) | (tiled ? 1u << 11 : 0) | (stride & 0xFFFF);
@@ -467,24 +487,38 @@ static int blit(void)
     cmd[4] = surf;
     cmd[5] = 0;
     cmd[6] = 0xFFF0A020u;
-    cmd[7] = (0x26u << 23) | 2u;                    /* MI_FLUSH_DW */
-    cmd[8] = 0;
-    cmd[9] = 0;
-    cmd[10] = 0;
-    cmd[11] = 0;                                    /* MI_NOOP: keep the tail 8-byte aligned */
+    cmd[7] = (2u << 29) | (0x50u << 22) | (3u << 20) | 5u;
+    cmd[8] = (3u << 24) | (0xF0u << 16) | (tiled ? 1u << 11 : 0) | (stride & 0xFFFF);
+    cmd[9] = (400u << 16) | 100u;
+    cmd[10] = (600u << 16) | 500u;
+    cmd[11] = alias;
+    cmd[12] = 0;
+    cmd[13] = 0xFFF0A020u;
+    cmd[14] = (0x26u << 23) | 2u;                   /* MI_FLUSH_DW */
+    cmd[15] = 0;
+    cmd[16] = 0;
+    cmd[17] = 0;
     cache_flush(ring, 4096);
-    tail = 32 + 12 * 4;
+    tail = 32 + 18 * 4;
     WR(RING_TAIL(BCS), tail);
     n = poll_until(RING_HEAD(BCS), 0x1FFFFC, tail, 4000000);
 
-    /* did the pixels change?  read them back with the processor */
+    /* did the pixels change?  read them back with the processor, on a grid */
     fb = (volatile uint32_t *)m.framebuffer;
     {
-        uint32_t inside = fb[200 * (m.pitch / 4) + 300], outside = fb[400 * (m.pitch / 4) + 600];
-        int k;
+        uint32_t inside = fb[200 * (m.pitch / 4) + 300], outside = fb[700 * (m.pitch / 4) + 600];
+        int k, x, y, hit1 = 0, hit2 = 0, total = 0;
+        for (y = 0; y < 200; y += 10)
+            for (x = 0; x < 400; x += 10) {
+                total++;
+                if ((fb[(100 + y) * (m.pitch / 4) + 100 + x] & 0xFFFFFF) == 0xF0A020) hit1++;
+                if ((fb[(400 + y) * (m.pitch / 4) + 100 + x] & 0xFFFFFF) == 0xF0A020) hit2++;
+            }
+        note("rectangle through the cached mapping: %d of %d samples amber", hit1, total);
+        note("rectangle through our uncached mapping: %d of %d samples amber", hit2, total);
         ok = (inside & 0xFFFFFF) == 0xF0A020 && (outside & 0xFFFFFF) != 0xF0A020;
         if (n >= 0) {
-            copy_tests(surf, stride, tail, fb, m.pitch);
+            copy_tests(alias, stride, tail, fb, m.pitch);
             show_cursor();
         }
         sys_getkey();                               /* leave it on the screen until a key */
