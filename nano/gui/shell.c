@@ -131,6 +131,7 @@ void win_close(int id)
     calendar_closed(id);
     notes_closed(id);
     paint_closed(id);
+    scene3d_closed(id);
     windows[id].open = 0;
     for (i = 0, j = 0; i < window_count; i++)
         if (z_order[i] != id) z_order[j++] = z_order[i];
@@ -494,6 +495,7 @@ void shell_run_menu(int action)
     case A_NOTES:    app_notes(); break;
     case A_SHOT:     app_screenshot(); break;
     case A_PAINT:    app_paint(); break;
+    case A_SCENE3D:  app_scene3d(); break;
     default: break;
     }
 }
@@ -788,6 +790,7 @@ int main(int argc, char **argv)
     input_start_keyboard();
     touch_open();                               /* a laptop's pad, over I2C */
     input_open(scr_w, scr_h, touch_present);
+    input_fast_timer(1);                        /* so the loop can sleep between sound refills */
     if (draw_direct()) cursor_sprite();         /* the pointer as the display engine's own sprite */
     wall_load_config();
     app_about();
@@ -825,6 +828,10 @@ int main(int argc, char **argv)
         if (viewer_tick()) need(REDRAW_WINDOWS);
         if (clock_tick()) {
             int id = clock_window();
+            if (id >= 0) need_window(&windows[id], windows[id].x, windows[id].y);
+        }
+        if (scene3d_tick()) {
+            int id = scene3d_window();
             if (id >= 0) need_window(&windows[id], windows[id].x, windows[id].y);
         }
         moved = (mouse_x != last_x || mouse_y != last_y);
@@ -871,16 +878,21 @@ int main(int argc, char **argv)
                chip can run dry while it happens; top the ring up again the
                moment the frame is out. */
             if (music_active()) music_tick();
-        } else if (!music_active()) {
-            /* Nothing to draw and nothing to feed: wait for the next
-               interrupt rather than spinning.  With sound playing there is
-               always the ring to keep ahead of, so we stay awake. */
+        } else {
+            /* Nothing to draw: wait for the next interrupt rather than
+               spinning.  The 100 Hz heartbeat wakes us about every ten
+               milliseconds; the sound ring holds a third of a second, so a
+               sleep that long never starves it, and the next pass refills
+               it.  This is what keeps the processor near idle while music
+               plays instead of pinned at full. */
             unsigned t_idle = now_us();
             __asm__ volatile("hlt");
             shell_stats.idle_us += now_us() - t_idle;
+            if (music_active()) music_tick();       /* top the ring up right after waking */
         }
     }
 
+    input_fast_timer(0);                        /* the firmware's 18.2 Hz back, for DOS programs */
     touch_close();
     input_close();
     draw_close();

@@ -67,7 +67,7 @@ int  popup_event(struct event *e);
 
 /* what the menu and the icons can do */
 enum { A_FILES, A_MUSIC, A_PROMPT, A_CALC, A_WRITE, A_DOOM, A_MONITOR, A_KEYBOARD, A_HELP,
-       A_ABOUT, A_EXIT, A_VIEWER, A_CLOCK, A_CALENDAR, A_NOTES, A_SHOT, A_PAINT, A_DISK };
+       A_ABOUT, A_EXIT, A_VIEWER, A_CLOCK, A_CALENDAR, A_NOTES, A_SHOT, A_PAINT, A_DISK, A_SCENE3D };
 
 void app_pictures(void);                /* choose a picture for the background */
 uint32_t *wall_decode(const char *path);  /* a picture, screen-sized; free it */
@@ -92,6 +92,10 @@ int  png_write(const char *name, const uint32_t *px, int w, int h);   /* compres
 uint32_t *png_decode(const char *path, int *w, int *h);              /* the picture at its own size */
 void app_paint(void);
 void paint_closed(int id);
+void app_scene3d(void);
+int  scene3d_tick(void);
+int  scene3d_window(void);
+void scene3d_closed(int id);
 void shell_repaint(int x, int y, int w, int h);  /* a region an application changed */
 void app_calc(void);
 void app_prompt(void);

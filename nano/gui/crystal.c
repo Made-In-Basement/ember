@@ -53,7 +53,7 @@ static const struct entry programs_menu[] = {
     { "Pictures", A_VIEWER, -1, &art_globe }, { "Paint", A_PAINT, -1, &art_paint },
     { "Clock", A_CLOCK, -1, &art_clock },
     { "Calendar", A_CALENDAR, -1, &art_book }, { "Notes", A_NOTES, -1, &art_note },
-    { "Screenshot", A_SHOT, -1, &art_computer }, { "Doom", A_DOOM, -1, &art_chip }, { 0, 0, 0, 0 }
+    { "Screenshot", A_SHOT, -1, &art_computer }, { "3D", A_SCENE3D, -1, &art_chip }, { "Doom", A_DOOM, -1, &art_chip }, { 0, 0, 0, 0 }
 };
 static const struct entry system_menu[] = {
     { "Back", -1, 0, 0 }, { "Monitor", A_MONITOR, -1, &art_computer }, { "Keyboard", A_KEYBOARD, -1, &art_globe },
