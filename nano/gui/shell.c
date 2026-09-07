@@ -781,6 +781,7 @@ int main(int argc, char **argv)
        reaches it, the card is showing whatever happened to be in its
        memory, and everything below here takes a moment. */
     crystal_x = scr_w / 2;
+    draw_begin(1);
     wall_draw();
     draw_present();
 
@@ -790,6 +791,7 @@ int main(int argc, char **argv)
     if (draw_direct()) cursor_sprite();         /* the pointer as the display engine's own sprite */
     wall_load_config();
     app_about();
+    draw_begin(1);
     draw_all();
     draw_present();
     music_chime();                              /* the sound chip is slow to wake */
@@ -835,6 +837,9 @@ int main(int argc, char **argv)
 
         if (redraw_level != REDRAW_NONE || moved) {
             unsigned t_draw = now_us(), t_present;
+            draw_begin(redraw_level == REDRAW_ALL);     /* the buffer to draw: off screen, caught up */
+            shell_stats.idle_us += now_us() - t_draw;   /* waiting for the display counts as idle */
+            t_draw = now_us();
             cursor_lift();
             if (redraw_level == REDRAW_RECT) {
                 /* One region: everything is drawn, but only within it,

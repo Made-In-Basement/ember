@@ -22,7 +22,10 @@ uint32_t *back;
 
 static uint8_t *fb;                     /* the card's memory */
 static int fb_pitch, fb_bpp;
-static int direct;                      /* the display reads `back` itself: nothing to copy */
+static int direct;                      /* the display scans our buffers itself: nothing to copy */
+static uint32_t *bufs[2];               /* the two: `back` is the one being drawn */
+static int cur, flip_pending;
+static int pd_x0, pd_y0, pd_x1, pd_y1;  /* what the last frame drew: the other buffer lacks it */
 static int dmg_x0, dmg_y0, dmg_x1, dmg_y1;      /* what changed */
 static int cx0, cy0, cx1, cy1;                  /* the clip rectangle */
 
@@ -89,11 +92,22 @@ int draw_open(int want_w, int want_h)
         return -1;
     }
     back = (uint32_t *)(((uint32_t)back + 4095) & ~4095u);    /* whole pages: the display may read it */
-    /* Best: the display engine scans our buffer out directly.  Otherwise
-       frames are copied into the card's memory, made write-combining. */
-    if (fb_bpp == 32 && gpu_open(back, scr_w, scr_h, scr_w * 4) == 0)
-        direct = 1;
-    else
+    bufs[0] = back;
+    /* Best: the display engine scans our buffers out directly, one shown
+       while the other is drawn.  Otherwise frames are copied into the
+       card's memory, made write-combining. */
+    if (fb_bpp == 32) {
+        uint32_t *second = malloc((size_t)scr_w * scr_h * 4 + 4096);
+        if (second) {
+            bufs[1] = (uint32_t *)(((uint32_t)second + 4095) & ~4095u);
+            if (gpu_open(bufs[0], bufs[1], scr_w, scr_h, scr_w * 4) == 0) {
+                direct = 1;
+                cur = 1;                /* buffer 0 is on the screen: the first frame is drawn into 1 */
+                back = bufs[1];
+            } else { free(second); bufs[1] = 0; }
+        }
+    }
+    if (!direct)
         fb_write_combine(m.framebuffer, (uint32_t)m.pitch * m.height);
     faces[F_SMALL] = &font_small;
     faces[F_NORMAL] = &font_normal;
@@ -113,6 +127,31 @@ void draw_close(void)
 }
 
 int draw_direct(void) { return direct; }
+
+/* Before anything is drawn: the buffer about to be drawn into must have
+   left the screen, and it lacks whatever the last frame drew into the
+   other one, so that is copied across (unless everything is about to be
+   redrawn anyway) and marked to be flushed with this frame. */
+void draw_begin(int full_redraw_coming)
+{
+    if (!direct) return;
+    if (flip_pending) {
+        int n;
+        for (n = 0; n < 800000 && !gpu_flip_done(); n++) ;      /* the next vertical blank, within 50 ms */
+        flip_pending = 0;
+    }
+    if (!full_redraw_coming && pd_x1 > pd_x0 && pd_y1 > pd_y0) {
+        const uint32_t *src = bufs[cur ^ 1];
+        int y, n = (pd_x1 - pd_x0) * 4;
+        for (y = pd_y0; y < pd_y1; y++)
+            memcpy(back + (size_t)y * scr_w + pd_x0, src + (size_t)y * scr_w + pd_x0, (size_t)n);
+        if (pd_x0 < dmg_x0) dmg_x0 = pd_x0;
+        if (pd_y0 < dmg_y0) dmg_y0 = pd_y0;
+        if (pd_x1 > dmg_x1) dmg_x1 = pd_x1;
+        if (pd_y1 > dmg_y1) dmg_y1 = pd_y1;
+    }
+    pd_x0 = pd_y0 = pd_x1 = pd_y1 = 0;
+}
 
 /* ---------------------------------------------------------------- damage */
 /* What has to reach the screen.  Bounded by the clip: a repaint of one
@@ -150,8 +189,15 @@ void draw_present(void)
     if (dmg_x0 >= dmg_x1 || dmg_y0 >= dmg_y1)
         return;
     draw_present_bytes += (unsigned long)(dmg_x1 - dmg_x0) * (dmg_y1 - dmg_y0) * (fb_bpp / 8);
-    if (direct) {                       /* the display reads `back`: the lines only have to reach memory */
-        gpu_flush(dmg_x0, dmg_y0, dmg_x1 - dmg_x0, dmg_y1 - dmg_y0);
+    if (direct) {
+        /* the lines reach memory, the display is asked to show this buffer
+           from its next blank, and drawing moves to the other one */
+        gpu_flush(back, dmg_x0, dmg_y0, dmg_x1 - dmg_x0, dmg_y1 - dmg_y0);
+        gpu_flip(cur);
+        flip_pending = 1;
+        pd_x0 = dmg_x0; pd_y0 = dmg_y0; pd_x1 = dmg_x1; pd_y1 = dmg_y1;
+        cur ^= 1;
+        back = bufs[cur];
         dmg_x0 = scr_w; dmg_y0 = scr_h; dmg_x1 = 0; dmg_y1 = 0;
         return;
     }

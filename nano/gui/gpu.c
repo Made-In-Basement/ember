@@ -26,13 +26,14 @@ static volatile uint64_t *ggtt;         /* the global graphics page table */
 static uint32_t ggtt_entries;
 static int plane = -1;                  /* the display plane the firmware drives */
 static uint32_t firmware_surf, firmware_stride;
-static uint32_t *screen;                /* the desktop's buffer, now the screen */
+static uint32_t *bufs[2];               /* the desktop's two buffers: one shown, one drawn */
 static int scr_pitch;                   /* bytes a row */
+static int pending = -1;                /* the buffer a flip was asked for, until it shows */
 static uint32_t *cursor_px;             /* 64x64 ARGB, four pages */
 static int cur_hot_x, cur_hot_y, cur_on, active, has_clflushopt;
 static char note_buf[120] = "no display engine driver";
 
-#define SCREEN_GPU      0x10000000u     /* where the screen sits in the GPU's address space */
+static const uint32_t buf_gpu[2] = { 0x10000000u, 0x12000000u };   /* the buffers' GPU addresses */
 #define CURSOR_GPU      0x0F000000u
 #define PTE_FLAGS       0x03u           /* present, writable (the cache index is not honoured) */
 #define WBINVD_ABOVE    (2u << 20)      /* a bigger flush than this: the whole cache, at once */
@@ -43,6 +44,7 @@ static char note_buf[120] = "no display engine driver";
 #define PLANE_CNTR(p)       (0x70180 + (p) * 0x1000)
 #define PLANE_STRIDE(p)     (0x70188 + (p) * 0x1000)
 #define PLANE_SURF(p)       (0x7019C + (p) * 0x1000)
+#define PLANE_SURFLIVE(p)   (0x701AC + (p) * 0x1000)   /* the surface being scanned right now */
 #define CUR_CNTR(p)         (0x70080 + (p) * 0x1000)
 #define CUR_BASE(p)         (0x70084 + (p) * 0x1000)
 #define CUR_POS(p)          (0x70088 + (p) * 0x1000)
@@ -69,14 +71,14 @@ int gpu_active(void) { return active; }
 const char *gpu_note(void) { return note_buf; }
 
 /* ---------------------------------------------------------------- open */
-int gpu_open(uint32_t *buffer, int w, int h, int pitch)
+int gpu_open(uint32_t *a, uint32_t *b, int w, int h, int pitch)
 {
-    uint32_t id, cls, cmd, b0lo, b0hi, ggc, bdsm, ggms, bar0, npages, i, phys, cntr;
+    uint32_t id, cls, cmd, b0lo, b0hi, ggc, bdsm, ggms, bar0, npages, i, cntr;
     uint32_t halves[3] = { 2u << 20, 4u << 20, 8u << 20 };
-    int p;
+    int p, k;
 
     active = 0;
-    if (((uint32_t)buffer & 0xFFF) || (pitch & 63)) { decline("buffer not page aligned or pitch not a multiple of 64"); return -1; }
+    if (((uint32_t)a & 0xFFF) || ((uint32_t)b & 0xFFF) || (pitch & 63)) { decline("buffers not page aligned or pitch not a multiple of 64"); return -1; }
 
     id = pci_read(0);
     cls = pci_read(8);
@@ -114,40 +116,45 @@ int gpu_open(uint32_t *buffer, int w, int h, int pitch)
     if (cntr & (1 << 10)) { plane = -1; decline("plane surface is tiled"); return -1; }
 
     npages = ((uint32_t)pitch * h + 4095) / 4096;
-    if ((SCREEN_GPU >> 12) + npages > ggtt_entries) { plane = -1; decline("page table too small"); return -1; }
+    if ((buf_gpu[1] >> 12) + npages > ggtt_entries || npages > (buf_gpu[1] - buf_gpu[0]) / 4096) {
+        plane = -1; decline("page table too small"); return -1;
+    }
 
     /* the cursor's four pages */
     cursor_px = (uint32_t *)(((uint32_t)malloc(5 * 4096) + 4095) & ~4095u);
     if (!cursor_px) { plane = -1; decline("no memory"); return -1; }
     memset(cursor_px, 0, 4 * 4096);
 
-    /* the buffer black, and in memory, before the display sees it */
-    memset(buffer, 0, (size_t)pitch * h);
+    /* both buffers black, and in memory, before the display sees them */
+    bufs[0] = a;
+    bufs[1] = b;
+    memset(a, 0, (size_t)pitch * h);
+    memset(b, 0, (size_t)pitch * h);
     wbinvd();
-    phys = (uint32_t)buffer;
-    for (i = 0; i < npages; i++)
-        ggtt[(SCREEN_GPU >> 12) + i] = (uint64_t)((phys + i * 4096) | PTE_FLAGS);
+    for (k = 0; k < 2; k++)
+        for (i = 0; i < npages; i++)
+            ggtt[(buf_gpu[k] >> 12) + i] = (uint64_t)(((uint32_t)bufs[k] + i * 4096) | PTE_FLAGS);
     for (i = 0; i < 4; i++)
         ggtt[(CURSOR_GPU >> 12) + i] = (uint64_t)(((uint32_t)cursor_px + i * 4096) | PTE_FLAGS);
     WR(GFX_FLSH_CNTL, 1);
 
     {
-        uint32_t a, b, c, d;
-        __asm__ volatile("cpuid" : "=a"(a), "=b"(b), "=c"(c), "=d"(d) : "a"(7), "c"(0));
-        has_clflushopt = (b >> 23) & 1;
+        uint32_t ra, rb, rc, rd;
+        __asm__ volatile("cpuid" : "=a"(ra), "=b"(rb), "=c"(rc), "=d"(rd) : "a"(7), "c"(0));
+        has_clflushopt = (rb >> 23) & 1;
     }
 
     /* the flip: stride first if ours differs, then the surface, which arms it */
     firmware_surf = RD(PLANE_SURF(plane));
     firmware_stride = RD(PLANE_STRIDE(plane));
     if (firmware_stride != (uint32_t)pitch) WR(PLANE_STRIDE(plane), (uint32_t)pitch);
-    WR(PLANE_SURF(plane), SCREEN_GPU);
-    screen = buffer;
+    WR(PLANE_SURF(plane), buf_gpu[0]);
+    pending = 0;
     scr_pitch = pitch;
     active = 1;
     snprintf(note_buf, sizeof note_buf, "Intel %04X: the display reads the desktop's memory; the pointer is a sprite", id >> 16);
-    sys_logf("gpu: device %04X, table at BAR0+%u MB, %u entries; plane %c scans %u pages at %08X (was %08X), stride %u",
-             id >> 16, halves[i - 1] >> 20, ggtt_entries, 'A' + plane, npages, SCREEN_GPU, firmware_surf, pitch);
+    sys_logf("gpu: device %04X, table at BAR0+%u MB, %u entries; plane %c scans %u pages at %08X/%08X (was %08X), stride %u",
+             id >> 16, halves[i - 1] >> 20, ggtt_entries, 'A' + plane, npages, buf_gpu[0], buf_gpu[1], firmware_surf, pitch);
     return 0;
 }
 
@@ -173,14 +180,31 @@ static void flush_lines(const void *p, uint32_t n)
     else { for (; c < e; c += 64) __asm__ volatile("clflush (%0)" : : "r"(c) : "memory"); }
 }
 
-void gpu_flush(int x, int y, int w, int h)
+void gpu_flush(const uint32_t *buf, int x, int y, int w, int h)
 {
     int j;
     if (!active || w <= 0 || h <= 0) return;
     if (!nx_has_clflush || (unsigned long)w * h * 4 >= WBINVD_ABOVE) { wbinvd(); return; }
     for (j = 0; j < h; j++)
-        flush_lines((const uint8_t *)screen + (size_t)(y + j) * scr_pitch + (size_t)x * 4, (uint32_t)w * 4);
+        flush_lines((const uint8_t *)buf + (size_t)(y + j) * scr_pitch + (size_t)x * 4, (uint32_t)w * 4);
     mfence();
+}
+
+/* ---------------------------------------------------------------- flipping */
+/* The surface register takes effect at the next vertical blank; the live
+   register says which surface is being scanned, so a buffer is never drawn
+   into while it is still on the screen. */
+void gpu_flip(int which)
+{
+    if (!active) return;
+    WR(PLANE_SURF(plane), buf_gpu[which & 1]);
+    pending = which & 1;
+}
+
+int gpu_flip_done(void)
+{
+    if (!active || pending < 0) return 1;
+    return (RD(PLANE_SURFLIVE(plane)) & ~0xFFFu) == buf_gpu[pending];
 }
 
 /* ---------------------------------------------------------------- cursor */

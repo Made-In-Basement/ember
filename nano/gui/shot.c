@@ -71,6 +71,7 @@ int screenshot_save(char *out, int out_size)
         if (h < 0) break;
         sys_close(h);
     }
+    draw_begin(0);                      /* the buffer in hand may lag the screen by a frame */
     return png_write(out, back, scr_w, scr_h);
 }
 
