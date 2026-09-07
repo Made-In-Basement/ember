@@ -259,10 +259,11 @@ static uint32_t build_batch(uint32_t target_gpu, int tw, int th, int tpitch,
     emit(GEN(3, 0, 0x07) | 3); emit_zeros(4);
     emit(GEN(3, 0, 0x06) | 3); emit_zeros(4);
     emit(GEN(3, 0, 0x04) | 1); emit(0); emit(1);
-    emit(GEN(3, 1, 0) | 2);                         /* DRAWING_RECTANGLE: the window's part */
-    emit(((uint32_t)y << 16) | (uint32_t)x);
-    emit(((uint32_t)(y + h - 1) << 16) | (uint32_t)(x + w - 1));
+    emit(GEN(3, 1, 0) | 2);                         /* DRAWING_RECTANGLE: all of the target */
     emit(0);
+    emit(((uint32_t)(th - 1) << 16) | (uint32_t)(tw - 1));
+    emit(0);
+    (void)x; (void)y; (void)w; (void)h;
     emit(GEN(3, 0, 8) | 3);                         /* VERTEX_BUFFERS */
     emit((1u << 14) | VSIZE); emit(BATCH_GPU + OFF_VERTS); emit(0); emit((uint32_t)(6 + nverts) * VSIZE);
     emit(GEN(3, 0, 9) | 5);                         /* VERTEX_ELEMENTS: pad, xyzw, uv */
@@ -462,6 +463,7 @@ int gpu3d_open(void)
         gpu_map(BATCH_GPU, (uint32_t)batch, 4);
         gpu_map(TEX_GPU, (uint32_t)tex, 4);
         gpu_map(TEST_GPU, (uint32_t)test_buf, 4);
+        memset(canvas, 0, (size_t)canvas_w * canvas_h * 4);
         gpu_map(CANVAS_GPU, (uint32_t)canvas, (canvas_w * canvas_h * 4 + 4095) / 4096);
         gpu_map(DEPTH_GPU, (uint32_t)depth, (scr_w * 4 * depth_rows + 4095) / 4096);
         WR(GFX_FLSH_CNTL, 1);

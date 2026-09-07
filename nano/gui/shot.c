@@ -71,13 +71,7 @@ int screenshot_save(char *out, int out_size)
         if (h < 0) break;
         sys_close(h);
     }
-    {
-        int was = png_effort, r;
-        png_effort = 4;                 /* a screen is millions of pixels: seconds, not a minute */
-        r = png_write(out, draw_shown_frame(), scr_w, scr_h);
-        png_effort = was;
-        return r;
-    }
+    return png_write(out, draw_shown_frame(), scr_w, scr_h);
 }
 
 void app_screenshot(void)
