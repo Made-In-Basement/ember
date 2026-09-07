@@ -31,11 +31,14 @@
 #define WELL      0x100C08
 #define CARD      0x1A140E
 #define GOOD      0x9BD27A
+#define PANEL     0x140F0A
 #define WARM      0xF0602A
 
 #define HIST      96                    /* samples kept: 48 seconds at two a second */
 #define WIN_W     660
 #define WIN_H     426
+#define SMALL_W   300                   /* the compact view: a strip for the side of the screen */
+#define SMALL_H   188
 
 static int win_id = -1;
 static unsigned last_ms;
@@ -255,8 +258,60 @@ static void bar(int x, int y, int w, int pct, uint32_t c)
     round_frame(x, y, w, 14, 4, EDGE);
 }
 
+/* F, or a click, moves between the full dashboard and the compact strip */
+static int monitor_event(struct window *w, struct event *e)
+{
+    int ch = e->type == EV_KEY ? e->b : 0;
+    if (ch == 'f' || ch == 'F' || ch == 'c' || ch == 'C' ||
+        (e->type == EV_MOUSE_DOWN && e->dbl)) {
+        int to_small = w->w > SMALL_W + 60;
+        w->w = to_small ? SMALL_W : WIN_W;
+        w->h = to_small ? SMALL_H : WIN_H;
+        if (to_small) {                             /* out of the way, at the right */
+            w->x = scr_w - SMALL_W - 24;
+            w->y = 70;
+        }
+        return 1;
+    }
+    return 0;
+}
+
+/* the compact view: the two readings that matter, and their history */
+static void monitor_small(struct window *w)
+{
+    int x = w->x, y = w->y, iw = w->w - 20, i;
+    char b[64];
+    fill(x, y, w->w, w->h, PANEL);
+    /* the processor */
+    text(F_SMALL, x + 10, y + 8, "Processor", TEXT_DIM);
+    snprintf(b, sizeof b, "%u%%", busy_pct);
+    text(F_BOLD, x + w->w - 12 - text_width(F_BOLD, b), y + 6, b, busy_pct > 80 ? WARM : AMBER);
+    history(x + 10, y + 28, iw, 44, busy_hist, 100, AMBER);
+    /* the memory */
+    text(F_SMALL, x + 10, y + 80, "Memory", TEXT_DIM);
+    if (ram_mb > 0) {
+        int used = ((scr_w * scr_h * 4) * 3 + 0x80000 + 0x200000) >> 20;
+        snprintf(b, sizeof b, "%d of %d MB", used, ram_mb);
+        text(F_SMALL, x + w->w - 12 - text_width(F_SMALL, b), y + 80, b, TEXT);
+        bar(x + 10, y + 100, iw, ram_mb > 0 ? used * 100 / ram_mb : 0, GOOD);
+    }
+    /* the temperature, when the processor will say */
+    if (temp_c > 0) {
+        snprintf(b, sizeof b, "%d C", temp_c);
+        text(F_SMALL, x + 10, y + 120, "Temperature", TEXT_DIM);
+        text(F_SMALL, x + w->w - 12 - text_width(F_SMALL, b), y + 120, b, temp_c > 80 ? WARM : TEXT);
+        history(x + 10, y + 138, iw, 30, temp_hist, 100, temp_c > 80 ? WARM : GOOD);
+    } else {
+        snprintf(b, sizeof b, "%u fps   %u.%u ms", fps, present_ms10 / 10, present_ms10 % 10);
+        text(F_SMALL, x + 10, y + 124, b, TEXT_DIM);
+    }
+    for (i = 0; i < 1; i++) fill(x, y + w->h - 22, w->w, 1, EDGE);
+    text(F_SMALL, x + 10, y + w->h - 18, "Full view: F", TEXT_DIM);
+}
+
 static void monitor_draw(struct window *w)
 {
+    if (w->w <= SMALL_W + 60) { monitor_small(w); return; }   /* small window, small view */
     char b[96];
     int x = w->x, y = w->y;
     int cw = (WIN_W - 42) / 2, ch = 190;
@@ -301,7 +356,7 @@ static void monitor_draw(struct window *w)
     y += 14 + ch + 14;
     card(x + 14, y, cw, 92, "Memory");
     {
-        int used_mb = ((scr_w * scr_h * 4) * 2 + 0x80000 + 0x200000) >> 20;   /* our buffers and program */
+        int used_mb = ((scr_w * scr_h * 4) * 3 + 0x80000 + 0x200000) >> 20;   /* our buffers and program */
         int pct = ram_mb > 0 ? used_mb * 100 / ram_mb : 0;
         bar(x + 28, y + 40, cw - 28, pct < 2 ? 2 : pct, AMBER);
         if (ram_mb > 0)
@@ -365,7 +420,7 @@ void app_monitor(void)
     sample_processor();
     last = shell_stats;
     last_ms = now_ms();
-    win_id = win_open("Monitor", WIN_W, WIN_H, monitor_draw, 0);
+    win_id = win_open("Monitor", WIN_W, WIN_H, monitor_draw, monitor_event);
 }
 
 /* from the main loop: 1 when the window wants repainting */

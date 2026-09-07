@@ -248,7 +248,7 @@ def build_gui():
               [os.path.join(ROOT, 'build', 'src_dl', 'picojpeg.c')] +
               [os.path.join(d, f) for f in ('draw.c', 'gpu.c', 'gpu3d.c', 'input.c', 'crystal.c',
                                             'touch.c', 'wall.c', 'menu.c', 'music.c',
-                                            'files.c', 'tools.c', 'apps.c', 'monitor.c', 'mtrr.c', 'osk.c', 'write.c', 'power.c', 'clock.c', 'calendar.c', 'notes.c', 'viewer.c', 'shot.c', 'paint.c', 'png.c', 'scene3d.c',
+                                            'files.c', 'tools.c', 'apps.c', 'monitor.c', 'mtrr.c', 'osk.c', 'write.c', 'power.c', 'clock.c', 'calendar.c', 'notes.c', 'viewer.c', 'shot.c', 'paint.c', 'png.c', 'scene3d.c', 'icons.c',
                                             'shell.c')]
               + [os.path.join(ROOT, 'nano', 'player', 'paudio.c')],
               'EMBER.N32',

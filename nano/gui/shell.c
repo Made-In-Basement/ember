@@ -39,6 +39,7 @@ static int window_count;
 static int z_order[MAX_WINDOWS];
 static int focused = -1;
 
+static int opening_action = -1;         /* stamped on whatever window the menu opens */
 static int drag_win = -1, drag_dx, drag_dy;
 static int resize_win = -1;
 #define drag_active (drag_win >= 0)
@@ -110,6 +111,7 @@ int win_open(const char *title, int w, int h, void (*draw)(struct window *),
     win->x = 120 + (id * 34) % 260;
     win->y = BAR_H + 60 + (id * 28) % 160;
     win->open = 1;
+    win->app = opening_action;
     win->draw = draw;
     win->event = event;
     z_order[window_count] = id;
@@ -133,6 +135,7 @@ void win_close(int id)
     notes_closed(id);
     paint_closed(id);
     scene3d_closed(id);
+    icons_closed(id);
     windows[id].open = 0;
     for (i = 0, j = 0; i < window_count; i++)
         if (z_order[i] != id) z_order[j++] = z_order[i];
@@ -224,20 +227,173 @@ static void draw_window(struct window *w, int is_focused, int with_backdrop)
     }
 }
 
+/* ---------------------------------------------------------------- settings */
+/* The whole of \EMBER.CFG is read once at start-up and rewritten whenever
+   anything worth keeping changes: the background, the icons, and where the
+   windows were when the desktop last ended.  One line to a setting, so it
+   can still be read - and edited - at the DOS prompt. */
+static char cfg_buf[3000];
+static int cfg_n;
+
+static void cfg_read(void)
+{
+    int fd = sys_open("\\EMBER.CFG"), n;
+    cfg_n = 0;
+    if (fd < 0) return;
+    n = sys_read(fd, cfg_buf, sizeof cfg_buf - 1);
+    sys_close(fd);
+    if (n > 0) { cfg_n = n; cfg_buf[n] = 0; }
+}
+
+const char *cfg_next(const char *key, const char *after)
+{
+    int klen = (int)strlen(key);
+    const char *p = after ? after : cfg_buf;
+    if (!cfg_n) return 0;
+    while (p < cfg_buf + cfg_n) {
+        const char *line = p;
+        while (p < cfg_buf + cfg_n && *p != '\n') p++;
+        if (p < cfg_buf + cfg_n) p++;
+        if (!strncmp(line, key, klen) && line[klen] == ' ') return line + klen + 1;
+    }
+    return 0;
+}
+
+const char *cfg_get(const char *key) { return cfg_next(key, 0); }
+
 /* ---------------------------------------------------------------- icons */
-struct desk_icon { const char *label; const struct image *art; };
-static const struct desk_icon icons[] = {
-    { "Files",      &art_folder },
-    { "Music",      &art_music },
-    { "Prompt",     &art_terminal },
-    { "Calculator", &art_calc },
-    { "Write",      &art_note },
-    { "Doom",       &art_chip },
-    { "About",      &art_info },
+/* Every program the desktop can put on the wall, with the short name it
+   goes by in the settings file.  Which of them appear, and in what order,
+   is the `icons` line; the Icons window edits it. */
+struct app_entry { const char *key, *label; const struct image *art; int action; };
+static const struct app_entry catalogue[] = {
+    { "files",    "Files",      &art_folder,   A_FILES },
+    { "music",    "Music",      &art_music,    A_MUSIC },
+    { "prompt",   "Prompt",     &art_terminal, A_PROMPT },
+    { "calc",     "Calculator", &art_calc,     A_CALC },
+    { "write",    "Write",      &art_note,     A_WRITE },
+    { "monitor",  "Monitor",    &art_computer, A_MONITOR },
+    { "pictures", "Pictures",   &art_globe,    A_VIEWER },
+    { "paint",    "Paint",      &art_paint,    A_PAINT },
+    { "clock",    "Clock",      &art_clock,    A_CLOCK },
+    { "calendar", "Calendar",   &art_book,     A_CALENDAR },
+    { "notes",    "Notes",      &art_note,     A_NOTES },
+    { "solid",    "3D",         &art_chip,     A_SCENE3D },
+    { "doom",     "Doom",       &art_chip,     A_DOOM },
+    { "about",    "About",      &art_info,     A_ABOUT },
 };
-#define ICON_COUNT 7
-/* what each icon does */
-static const int icon_menu[ICON_COUNT] = { A_FILES, A_MUSIC, A_PROMPT, A_CALC, A_WRITE, A_DOOM, A_ABOUT };
+#define CATALOGUE_N ((int)(sizeof catalogue / sizeof catalogue[0]))
+#define ICONS_MAX 12
+static int icon_at[ICONS_MAX] = { 0, 1, 2, 4, 5, 13 };   /* Files Music Prompt Write Monitor About */
+static int icon_count = 6;
+#define ICON_COUNT icon_count
+
+int  icons_catalogue_n(void) { return CATALOGUE_N; }
+const char *icons_cat_label(int i) { return catalogue[i].label; }
+const struct image *icons_cat_art(int i) { return catalogue[i].art; }
+
+int icons_has(int cat)
+{
+    int i;
+    for (i = 0; i < icon_count; i++) if (icon_at[i] == cat) return 1;
+    return 0;
+}
+
+void icons_toggle(int cat)
+{
+    int i, j;
+    for (i = 0; i < icon_count; i++)
+        if (icon_at[i] == cat) {                        /* out it comes */
+            for (j = i; j + 1 < icon_count; j++) icon_at[j] = icon_at[j + 1];
+            icon_count--;
+            damage_all();
+            return;
+        }
+    if (icon_count < ICONS_MAX) {                       /* in it goes, at the end */
+        icon_at[icon_count++] = cat;
+        damage_all();
+    }
+}
+
+static void icons_load(void)
+{
+    const char *v = cfg_get("icons");
+    int n = 0, i;
+    if (!v) return;
+    while (*v && n < ICONS_MAX) {
+        char word[24];
+        int k = 0;
+        while (*v == ' ') v++;
+        while (*v && *v != ' ' && *v != '\r' && *v != '\n' && k < (int)sizeof word - 1) word[k++] = *v++;
+        word[k] = 0;
+        if (!k) break;
+        for (i = 0; i < CATALOGUE_N; i++)
+            if (!strcmp(word, catalogue[i].key)) { icon_at[n++] = i; break; }
+    }
+    if (n) icon_count = n;
+}
+void cfg_write(void)
+{
+    char line[200];
+    int fd, i, n;
+    fd = sys_create("\\EMBER.CFG");
+    if (fd < 0) return;
+    n = wall_line(line, sizeof line);
+    if (n > 0) sys_write(fd, line, n);
+    n = snprintf(line, sizeof line, "icons");
+    for (i = 0; i < icon_count && n < (int)sizeof line - 20; i++)
+        n += snprintf(line + n, sizeof line - n, " %s", catalogue[icon_at[i]].key);
+    n += snprintf(line + n, sizeof line - n, "\r\n");
+    sys_write(fd, line, n);
+    for (i = 0; i < window_count; i++) {                /* where each window was */
+        struct window *w = &windows[z_order[i]];
+        const char *key = 0;
+        int k;
+        for (k = 0; k < CATALOGUE_N; k++)
+            if (catalogue[k].action == w->app) { key = catalogue[k].key; break; }
+        if (!key || w->app == A_PROMPT || w->app == A_DOOM) continue;
+        n = snprintf(line, sizeof line, "window %s %d %d %d %d %d\r\n", key,
+                     w->maxed ? w->sx : w->x, w->maxed ? w->sy : w->y,
+                     w->maxed ? w->sw : w->w, w->maxed ? w->sh : w->h, w->maxed ? 1 : 0);
+        sys_write(fd, line, n);
+    }
+    sys_close(fd);
+}
+
+/* the windows the last session left open, put back where they were */
+static void set_maximized(struct window *w, int on);
+
+static void session_restore(void)
+{
+    const char *v = 0;
+    char *end;
+    int any = 0;
+    while ((v = cfg_next("window", v)) != 0) {
+        char key[24];
+        int k = 0, i, x, y, w, h, mx, id;
+        while (*v && *v != ' ' && k < (int)sizeof key - 1) key[k++] = *v++;
+        key[k] = 0;
+        x = (int)strtol(v, &end, 10); v = end;
+        y = (int)strtol(v, &end, 10); v = end;
+        w = (int)strtol(v, &end, 10); v = end;
+        h = (int)strtol(v, &end, 10); v = end;
+        mx = (int)strtol(v, &end, 10); v = end;
+        for (i = 0; i < CATALOGUE_N; i++) {
+            if (strcmp(key, catalogue[i].key)) continue;
+            shell_run_menu(catalogue[i].action);
+            if (!window_count) break;
+            id = z_order[window_count - 1];
+            if (windows[id].app != catalogue[i].action) break;   /* it opened nothing */
+            if (w > 120 && h > 80 && !windows[id].fixed) { windows[id].w = w; windows[id].h = h; }
+            if (x > -100 && y > 0 && x < scr_w - 60 && y < scr_h - 40) { windows[id].x = x; windows[id].y = y; }
+            if (mx) set_maximized(&windows[id], 1);
+            any = 1;
+            break;
+        }
+    }
+    if (any) damage_all();
+}
+
 #define ICON_W     96
 #define ICON_H     100
 #define ICON_X     28
@@ -250,10 +406,11 @@ static void draw_icons(void)
     if (!clip_intersects(ICON_X - 8, ICON_Y - 8, ICON_W + 8, ICON_COUNT * ICON_H + 8))
         return;                                 /* the column is not in the region */
     for (i = 0; i < ICON_COUNT; i++) {
+        const struct app_entry *ent = &catalogue[icon_at[i]];
         int x = ICON_X, y = ICON_Y + i * ICON_H;
         int lit = (i == icon_sel);
-        int tw = text_width(F_SMALL, icons[i].label);
-        const struct image *art = icons[i].art;
+        int tw = text_width(F_SMALL, ent->label);
+        const struct image *art = ent->art;
         int ax = x + (ICON_W - 12) / 2 - art->w / 2;
         if (lit) {
             round_fill_alpha(x - 6, y - 6, ICON_W, ICON_H - 8, 6, AMBER, 30);
@@ -263,7 +420,7 @@ static void draw_icons(void)
             image_draw(art, ax, y);
         }
         text(F_SMALL, x + (ICON_W - 12) / 2 - tw / 2, y + art->h + 6,
-             icons[i].label, lit ? AMBER_HOT : TEXT);
+             ent->label, lit ? AMBER_HOT : TEXT);
     }
 }
 
@@ -478,6 +635,7 @@ static void draw_all(void)
 /* ---------------------------------------------------------------- events */
 void shell_run_menu(int action)
 {
+    opening_action = action;
     switch (action) {
     case A_FILES:    app_files(); break;
     case A_MUSIC:    app_music(); break;
@@ -497,6 +655,7 @@ void shell_run_menu(int action)
     case A_SHOT:     app_screenshot(); break;
     case A_PAINT:    app_paint(); break;
     case A_SCENE3D:  app_scene3d(); break;
+    case A_ICONS:    app_icons(); break;
     default: break;
     }
 }
@@ -635,7 +794,7 @@ static void handle(struct event *e)
         if (id < 0) {
             int ic = icon_hit(e->a, e->b);
             if (ic >= 0) {
-                if (e->dbl && icon_sel == ic) shell_run_menu(icon_menu[ic]);  /* a double-click opens */
+                if (e->dbl && icon_sel == ic) shell_run_menu(catalogue[icon_at[ic]].action);  /* a double-click opens */
                 else icon_sel = ic;
             } else {
                 icon_sel = -1;
@@ -732,7 +891,7 @@ static void handle(struct event *e)
                 break;
             }
             if (e->a == K_ENTER && icon_sel >= 0) {
-                shell_run_menu(icon_menu[icon_sel]);
+                shell_run_menu(catalogue[icon_at[icon_sel]].action);
                 break;
             }
         }
@@ -784,6 +943,8 @@ int main(int argc, char **argv)
        reaches it, the card is showing whatever happened to be in its
        memory, and everything below here takes a moment. */
     crystal_x = scr_w / 2;
+    cfg_read();                                 /* the settings file, once */
+    icons_load();
     draw_begin(1);
     wall_draw();
     draw_present();
@@ -794,7 +955,8 @@ int main(int argc, char **argv)
     input_fast_timer(1);                        /* so the loop can sleep between sound refills */
     if (draw_direct()) cursor_sprite();         /* the pointer as the display engine's own sprite */
     wall_load_config();
-    app_about();
+    session_restore();                          /* the windows of the last session */
+    if (!window_count) app_about();             /* a first run: say hello */
     draw_begin(1);
     draw_all();
     draw_present();
@@ -893,6 +1055,7 @@ int main(int argc, char **argv)
         }
     }
 
+    cfg_write();                                /* the background, the icons, the windows */
     input_fast_timer(0);                        /* the firmware's 18.2 Hz back, for DOS programs */
     touch_close();
     input_close();

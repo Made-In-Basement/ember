@@ -306,33 +306,28 @@ void wall_draw(void)
 /* ---------------------------------------------------------------- keeping it */
 /* The choice is written to a small file so the desktop looks the same next
    time.  One line, so it can be read or edited from the DOS prompt. */
+/* the background as one line; the shell writes the whole file */
+int wall_line(char *buf, int n)
+{
+    if (wall_kind == WALL_PICTURE)
+        return snprintf(buf, n, "background picture %s\r\n", wall_file);
+    return snprintf(buf, n, "background %d\r\n", wall_kind);
+}
+
 void wall_save(void)
 {
-    char line[160];
-    int fd = sys_create("\\EMBER.CFG");
-    if (fd < 0) return;
-    if (wall_kind == WALL_PICTURE)
-        snprintf(line, sizeof line, "background picture %s\r\n", wall_file);
-    else
-        snprintf(line, sizeof line, "background %d\r\n", wall_kind);
-    sys_write(fd, line, (int)strlen(line));
-    sys_close(fd);
+    cfg_write();
 }
 
 void wall_load_config(void)
 {
-    char buf[200];
-    int fd = sys_open("\\EMBER.CFG"), n, i;
-    if (fd < 0) return;
-    n = sys_read(fd, buf, sizeof buf - 1);
-    sys_close(fd);
-    if (n <= 0) return;
-    buf[n] = 0;
-    if (memcmp(buf, "background ", 11) != 0) return;
-    if (memcmp(buf + 11, "picture ", 8) == 0) {
+    const char *v = cfg_get("background");
+    int i;
+    if (!v) return;
+    if (memcmp(v, "picture ", 8) == 0) {
         char path[96];
         for (i = 0; i < (int)sizeof path - 1; i++) {
-            char c = buf[19 + i];
+            char c = v[8 + i];
             if (c == 0 || c == '\r' || c == '\n') break;
             path[i] = c;
         }
@@ -340,7 +335,7 @@ void wall_load_config(void)
         if (wall_load(path) != 0)
             wall_kind = WALL_EMBER;
     } else {
-        wall_kind = buf[11] - '0';
+        wall_kind = v[0] - '0';
         if (wall_kind < 0 || wall_kind >= WASH_COUNT) wall_kind = WALL_EMBER;
     }
 }

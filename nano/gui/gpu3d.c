@@ -336,7 +336,12 @@ int gpu3d_open(void)
         batch = (uint32_t *)page_aligned(4);
         tex = (uint32_t *)page_aligned(4);
         depth = (uint32_t *)page_aligned((scr_w * 4 * depth_rows + 4095) / 4096);
-        if (!ring || !hws || !scratch || !batch || !tex || !depth) { snprintf(note_buf, sizeof note_buf, "3D engine: no memory"); return -1; }
+        if (!ring || !hws || !scratch || !batch || !tex || !depth) {
+            snprintf(note_buf, sizeof note_buf, "3D engine: no memory for a %d MB depth buffer",
+                     (int)(((unsigned)scr_w * 4 * depth_rows) >> 20));
+            sys_logf("3d: could not allocate; depth wanted %u bytes", (unsigned)scr_w * 4 * depth_rows);
+            return -1;
+        }
         memset(ring, 0, 4096); memset(hws, 0, 4096); memset(scratch, 0, 4096);
         memset(batch, 0, 4 * 4096); memset(tex, 0, 4 * 4096);
         memset(depth, 0, (size_t)scr_w * 4 * depth_rows);
@@ -355,20 +360,16 @@ int gpu3d_open(void)
     WR(RC_CONTROL, 0);
     ppat_was = RD(PPAT_LO);
     WR(PPAT_LO, ppat_was & 0xFFFFFF00u);            /* entry 0 uncached: engine writes land in memory */
-    {
-        uint32_t cap = RD(RP_STATE_CAP);            /* the top clock, and pinned there while in use */
-        rp0 = cap & 0xFF;
-        rpn = (cap >> 16) & 0xFF;
-        WR(RPNSWREQ, rp0 << 24);
-        WR(RP_INTERRUPT_LIMITS, (rp0 << 24) | (rp0 << 16));
-        WR(RP_CONTROL, 0xF92u);
-    }
-    if (start_ring() != 0) { snprintf(note_buf, sizeof note_buf, "3D engine: the ring would not run"); WR(FORCEWAKE_MT, 1u << 16); return -1; }
+    /* The clock is left exactly as the firmware set it.  Raising it needs
+       registers this machine has not confirmed, and a request built from a
+       bad reading stalls the chip and takes the display down with it. */
+    if (start_ring() != 0) { snprintf(note_buf, sizeof note_buf, "3D engine: the ring would not run"); WR(PPAT_LO, ppat_was); WR(FORCEWAKE_MT, 1u << 16); return -1; }
     build_state();
     failures = 0;
     active = 1;
-    snprintf(note_buf, sizeof note_buf, "3D engine ready, clock %u-%u MHz", rpn * 50, rp0 * 50);
-    sys_logf("3d: ring running, clock cap %u-%u MHz, asked for the top", rpn * 50, rp0 * 50);
+    snprintf(note_buf, sizeof note_buf, "3D engine ready at %u MHz", ((RD(RPSTAT1) >> 7) & 0x7F) * 50);
+    sys_logf("3d: ring running at %u MHz; ring %08X batch %08X depth %08X (%d rows), screen %dx%d",
+             ((RD(RPSTAT1) >> 7) & 0x7F) * 50, RING_GPU, BATCH_GPU, DEPTH_GPU, depth_rows, scr_w, scr_h);
     return 0;
 }
 
@@ -377,8 +378,6 @@ void gpu3d_close(void)
     if (!active) return;
     WR(RING_MI_MODE, (1u << 24) | (1u << 8));
     WR(RING_CTL, 0);
-    WR(RPNSWREQ, rpn << 24);                        /* the clock back down */
-    WR(RP_INTERRUPT_LIMITS, (rpn << 24) | (rpn << 16));
     WR(PPAT_LO, ppat_was);
     WR(FORCEWAKE_MT, 1u << 16);
     active = 0;
@@ -424,7 +423,7 @@ void gpu3d_run(uint32_t *buffer)
     uint32_t target = gpu_buffer_address(buffer);
     int k;
     if (!active || !njobs) { njobs = 0; return; }
-    if (!target) { njobs = 0; return; }
+    if (!target) { sys_log("3d: the frame is not a buffer the engine knows"); njobs = 0; return; }
     for (k = 0; k < njobs && active; k++) {
         struct job *j = &jobs[k];
         float *vb = (float *)((uint8_t *)batch + OFF_VERTS);

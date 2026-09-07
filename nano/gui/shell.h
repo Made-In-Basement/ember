@@ -16,6 +16,7 @@ struct window {
     char path[96];
     /* the frame's own business */
     int minimized, maxed, fixed;        /* fixed: neither resized nor maximized */
+    int app;                            /* the menu action that opened it, for the settings file */
     int sx, sy, sw, sh;                 /* where it was before being maximized */
 };
 
@@ -50,6 +51,21 @@ extern int wall_kind;
 extern char wall_file[96];
 void wall_draw(void);
 void wall_set(int kind);
+int  wall_line(char *buf, int n);       /* the background, as a line of the settings file */
+
+/* the settings file, \EMBER.CFG: one line to a setting, all of it rewritten
+   whenever anything changes, so it can still be read at the DOS prompt */
+const char *cfg_get(const char *key);   /* the rest of the line, or 0 */
+const char *cfg_next(const char *key, const char *after);   /* for repeated keys */
+void cfg_write(void);
+
+void app_icons(void);                   /* choose which icons the desktop shows */
+void icons_closed(int id);
+int  icons_catalogue_n(void);           /* every program that may sit on the wall */
+const char *icons_cat_label(int i);
+const struct image *icons_cat_art(int i);
+int  icons_has(int cat);
+void icons_toggle(int cat);
 int  wall_load(const char *path);
 int  wall_choice_count(void);
 const char *wall_name(int kind);
@@ -67,7 +83,8 @@ int  popup_event(struct event *e);
 
 /* what the menu and the icons can do */
 enum { A_FILES, A_MUSIC, A_PROMPT, A_CALC, A_WRITE, A_DOOM, A_MONITOR, A_KEYBOARD, A_HELP,
-       A_ABOUT, A_EXIT, A_VIEWER, A_CLOCK, A_CALENDAR, A_NOTES, A_SHOT, A_PAINT, A_DISK, A_SCENE3D };
+       A_ABOUT, A_EXIT, A_VIEWER, A_CLOCK, A_CALENDAR, A_NOTES, A_SHOT, A_PAINT, A_DISK, A_SCENE3D,
+       A_ICONS };
 
 void app_pictures(void);                /* choose a picture for the background */
 uint32_t *wall_decode(const char *path);  /* a picture, screen-sized; free it */

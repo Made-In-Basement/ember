@@ -57,6 +57,7 @@ static const struct entry programs_menu[] = {
 };
 static const struct entry system_menu[] = {
     { "Back", -1, 0, 0 }, { "Monitor", A_MONITOR, -1, &art_computer }, { "Keyboard", A_KEYBOARD, -1, &art_globe },
+    { "Icons", A_ICONS, -1, &art_folder },
     { "Help", A_HELP, -1, &art_info }, { "About", A_ABOUT, -1, &art_crystal }, { 0, 0, 0, 0 }
 };
 static const struct entry *groups[] = { main_menu, programs_menu, system_menu };
