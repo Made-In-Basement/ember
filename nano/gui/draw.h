@@ -63,6 +63,7 @@ unsigned now_us(void);
 unsigned tsc_mhz(void);
 uint32_t draw_fb_phys(void);
 int      draw_fb_bpp(void);
+int      draw_direct(void);             /* 1: the display scans `back` out itself (gpu.c) */
 extern unsigned long draw_present_bytes;
 
 /* text */

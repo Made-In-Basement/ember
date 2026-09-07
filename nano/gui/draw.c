@@ -13,6 +13,7 @@
 #include <nanolibc.h>
 #include "nano.h"
 #include "draw.h"
+#include "gpu.h"
 #include "guifont.h"
 #include "guiart.h"
 
@@ -21,6 +22,7 @@ uint32_t *back;
 
 static uint8_t *fb;                     /* the card's memory */
 static int fb_pitch, fb_bpp;
+static int direct;                      /* the display reads `back` itself: nothing to copy */
 static int dmg_x0, dmg_y0, dmg_x1, dmg_y1;      /* what changed */
 static int cx0, cy0, cx1, cy1;                  /* the clip rectangle */
 
@@ -81,12 +83,18 @@ int draw_open(int want_w, int want_h)
     fb_pitch = m.pitch;
     fb_bpp = m.bpp;
     fb = (uint8_t *)m.framebuffer;
-    fb_write_combine(m.framebuffer, (uint32_t)m.pitch * m.height);
-    back = malloc((size_t)scr_w * scr_h * 4);
+    back = malloc((size_t)scr_w * scr_h * 4 + 4096);
     if (!back) {
         sys_set_video_mode(3);
         return -1;
     }
+    back = (uint32_t *)(((uint32_t)back + 4095) & ~4095u);    /* whole pages: the display may read it */
+    /* Best: the display engine scans our buffer out directly.  Otherwise
+       frames are copied into the card's memory, made write-combining. */
+    if (fb_bpp == 32 && gpu_open(back, scr_w, scr_h, scr_w * 4) == 0)
+        direct = 1;
+    else
+        fb_write_combine(m.framebuffer, (uint32_t)m.pitch * m.height);
     faces[F_SMALL] = &font_small;
     faces[F_NORMAL] = &font_normal;
     faces[F_BOLD] = &font_bold;
@@ -99,9 +107,12 @@ int draw_open(int want_w, int want_h)
 
 void draw_close(void)
 {
+    gpu_close();
     fb_write_combine_undo();
     sys_set_video_mode(3);
 }
+
+int draw_direct(void) { return direct; }
 
 /* ---------------------------------------------------------------- damage */
 /* What has to reach the screen.  Bounded by the clip: a repaint of one
@@ -139,6 +150,11 @@ void draw_present(void)
     if (dmg_x0 >= dmg_x1 || dmg_y0 >= dmg_y1)
         return;
     draw_present_bytes += (unsigned long)(dmg_x1 - dmg_x0) * (dmg_y1 - dmg_y0) * (fb_bpp / 8);
+    if (direct) {                       /* the display reads `back`: the lines only have to reach memory */
+        gpu_flush(dmg_x0, dmg_y0, dmg_x1 - dmg_x0, dmg_y1 - dmg_y0);
+        dmg_x0 = scr_w; dmg_y0 = scr_h; dmg_x1 = 0; dmg_y1 = 0;
+        return;
+    }
     for (y = dmg_y0; y < dmg_y1; y++) {
         const uint32_t *src = back + (size_t)y * scr_w + dmg_x0;
         uint8_t *dst = fb + (size_t)y * fb_pitch;

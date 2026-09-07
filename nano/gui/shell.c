@@ -8,6 +8,7 @@
 #include <nanolibc.h>
 #include "nano.h"
 #include "draw.h"
+#include "gpu.h"
 #include "input.h"
 #include "touch.h"
 #include "power.h"
@@ -374,23 +375,45 @@ static void cursor_save(int x, int y)
     cursor_saved_y = y;
 }
 
+static const char *cursor_shape[] = {
+    "X............", "XX...........", "XoX..........", "XooX.........",
+    "XoooX........", "XooooX.......", "XoooooX......", "XooooooX.....",
+    "XoooooooX....", "XooooooooX...", "XoooooooooX..", "XooooooXXXXX.",
+    "XoooXooX.....", "XooX.XooX....", "XoX...XooX...", "XX....XooX...",
+    "X......XooX..", ".......XooX..", "........XX...", 0
+};
+
+/* the software pointer: blended into the back buffer, lifted before a repaint */
 static void draw_cursor(int x, int y)
 {
-    static const char *shape[] = {
-        "X............", "XX...........", "XoX..........", "XooX.........",
-        "XoooX........", "XooooX.......", "XoooooX......", "XooooooX.....",
-        "XoooooooX....", "XooooooooX...", "XoooooooooX..", "XooooooXXXXX.",
-        "XoooXooX.....", "XooX.XooX....", "XoX...XooX...", "XX....XooX...",
-        "X......XooX..", ".......XooX..", "........XX...", 0
-    };
     int row, col;
-    for (row = 0; shape[row]; row++)
-        for (col = 0; shape[row][col]; col++) {
-            char c = shape[row][col];
+    for (row = 0; cursor_shape[row]; row++)
+        for (col = 0; cursor_shape[row][col]; col++) {
+            char c = cursor_shape[row][col];
             if (c == 'X') pixel_blend(x + col, y + row, 0x000000, 210);
             else if (c == 'o') pixel_blend(x + col, y + row, AMBER_HOT, 255);
         }
     damage(x, y, CUR_W, CUR_H);
+}
+
+/* the same pointer as a sprite for the display engine, twice the size: the
+   panel is dense, and a sprite costs nothing to draw however large */
+#define SPRITE_SCALE 2
+static void cursor_sprite(void)
+{
+    static uint32_t px[CUR_W * SPRITE_SCALE * CUR_H * SPRITE_SCALE];
+    int row, col, sx, sy, w = CUR_W * SPRITE_SCALE;
+    for (row = 0; cursor_shape[row]; row++)
+        for (col = 0; cursor_shape[row][col]; col++) {
+            char c = cursor_shape[row][col];
+            uint32_t v = c == 'X' ? 0xD2000000u : c == 'o' ? 0xFF000000u | AMBER_HOT : 0;
+            for (sy = 0; sy < SPRITE_SCALE; sy++)
+                for (sx = 0; sx < SPRITE_SCALE; sx++)
+                    px[(row * SPRITE_SCALE + sy) * w + col * SPRITE_SCALE + sx] = v;
+        }
+    gpu_cursor_image(px, w, CUR_H * SPRITE_SCALE, 0, 0);
+    gpu_cursor_move(mouse_x, mouse_y);
+    gpu_cursor_show(1);
 }
 
 /* a window's whole footprint: frame, title, shadow and halo */
@@ -764,6 +787,7 @@ int main(int argc, char **argv)
     input_start_keyboard();
     touch_open();                               /* a laptop's pad, over I2C */
     input_open(scr_w, scr_h, touch_present);
+    if (draw_direct()) cursor_sprite();         /* the pointer as the display engine's own sprite */
     wall_load_config();
     app_about();
     draw_all();
@@ -802,6 +826,12 @@ int main(int argc, char **argv)
             if (id >= 0) need_window(&windows[id], windows[id].x, windows[id].y);
         }
         moved = (mouse_x != last_x || mouse_y != last_y);
+        if (moved && draw_direct()) {               /* a sprite: one register, no repaint */
+            gpu_cursor_move(mouse_x, mouse_y);
+            last_x = mouse_x;
+            last_y = mouse_y;
+            moved = 0;
+        }
 
         if (redraw_level != REDRAW_NONE || moved) {
             unsigned t_draw = now_us(), t_present;
@@ -820,8 +850,10 @@ int main(int argc, char **argv)
                     if (windows[z_order[i]].draw)
                         draw_window(&windows[z_order[i]], z_order[i] == focused, 0);
             }
-            cursor_save(mouse_x, mouse_y);
-            draw_cursor(mouse_x, mouse_y);
+            if (!draw_direct()) {
+                cursor_save(mouse_x, mouse_y);
+                draw_cursor(mouse_x, mouse_y);
+            }
             last_x = mouse_x;
             last_y = mouse_y;
             t_present = now_us();

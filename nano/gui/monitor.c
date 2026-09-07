@@ -16,6 +16,7 @@
 #include <nanolibc.h>
 #include "nano.h"
 #include "draw.h"
+#include "gpu.h"
 #include "input.h"
 #include "shell.h"
 #include "paudio.h"
@@ -335,13 +336,17 @@ static void monitor_draw(struct window *w)
     /* ---- the display ---- */
     y += 92 + 14;
     card(x + 14, y, WIN_W - 28, 88, "Display");
-    snprintf(b, sizeof b, "%u frames a second   %u.%u ms drawing   %u.%u ms to the card   %u MB/s   %dx%d",
+    snprintf(b, sizeof b, "%u frames a second   %u.%u ms drawing   %u.%u ms to the screen   %u MB/s   %dx%d",
              fps, draw_ms10 / 10, draw_ms10 % 10, present_ms10 / 10, present_ms10 % 10,
              mb_s, scr_w, scr_h);
     text(F_SMALL, x + 28, y + 36, b, TEXT);
-    snprintf(b, sizeof b, "framebuffer %s; %d%% of the loop idle, %u passes a second, sound ring %d%% full",
-             fb_type, 100 - (int)busy_pct, loops, audio_ring_fill());
-    text(F_SMALL, x + 28, y + 58, b, strcmp(fb_type, "write-combining") ? AMBER : TEXT_DIM);
+    if (draw_direct())
+        snprintf(b, sizeof b, "%s; %d%% of the loop idle, %u passes a second, sound ring %d%% full",
+                 gpu_note(), 100 - (int)busy_pct, loops, audio_ring_fill());
+    else
+        snprintf(b, sizeof b, "framebuffer %s; %d%% of the loop idle, %u passes a second, sound ring %d%% full",
+                 fb_type, 100 - (int)busy_pct, loops, audio_ring_fill());
+    text(F_SMALL, x + 28, y + 58, b, draw_direct() || !strcmp(fb_type, "write-combining") ? TEXT_DIM : AMBER);
 }
 
 void monitor_closed(int id)
