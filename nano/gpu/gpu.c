@@ -445,14 +445,37 @@ static void show_cursor(void)
          RD(CUR_CNTR(active_plane)), RD(CUR_BASE(active_plane)), RD(CUR_POS(active_plane)));
 }
 
+/* the four attributes tried for the engine's writes: the firmware's own
+   mapping (write-back), then ours as uncached, write-combining, write-through */
+struct trial { const char *name; uint32_t gpu, flags; int y; };
+static struct trial trials[4] = {
+    { "firmware WB",   0,           0,     100 },
+    { "uncached",      0x08000000u, 0x1Bu, 400 },
+    { "write-combine", 0x0A000000u, 0x8Bu, 700 },
+    { "write-through", 0x0C000000u, 0x93u, 1000 },
+};
+
+/* how many of a grid of 800 samples inside a rectangle are amber, as seen
+   through the given view of the screen */
+static int count_amber(volatile uint32_t *view, uint32_t pitch, int y0)
+{
+    int x, y, hits = 0;
+    for (y = 0; y < 200; y += 10)
+        for (x = 0; x < 400; x += 10)
+            if ((view[(y0 + y) * (pitch / 4) + 100 + x] & 0xFFFFFF) == 0xF0A020) hits++;
+    return hits;
+}
+
+static void wbinvd(void) { __asm__ volatile("wbinvd" ::: "memory"); }
+
 static int blit(void)
 {
     struct vbe_mode m;
-    int mode = pick_mode(&m), n, ok = 0;
-    uint32_t surf, stride, tiled, tail, *cmd, alias = 0x08000000u;
-    volatile uint32_t *fb;
-    say("== 7. a rectangle from the blitter");
-    if (mode < 0) { say("no 32-bit linear mode between 800 and 1920 wide"); return -1; }
+    int mode = pick_mode(&m), n, ok = 0, t;
+    uint32_t surf, stride, tiled, tail, *cmd, phys;
+    volatile uint32_t *fb, *dram;
+    say("== 7. rectangles from the blitter, through four cache attributes");
+    if (mode < 0) { say("no 32-bit linear mode 800 or wider"); return -1; }
     say("setting mode %04X: %ux%u, %u bpp, pitch %u, framebuffer %08X", mode, m.width, m.height, m.bpp, m.pitch, m.framebuffer);
     if (sys_set_vbe_mode(mode, 1) != 0) { say("the mode would not set"); return -1; }
     read_display("in the graphics mode");
@@ -460,77 +483,68 @@ static int blit(void)
     surf = RD(PLANE_SURF(active_plane)) & ~0xFFFu;
     stride = RD(PLANE_STRIDE(active_plane));
     tiled = RD(PLANE_CNTR(active_plane)) & (1 << 10);
-    {
-        uint64_t e = ggtt[surf >> 12];
-        say("the surface's page-table entry: %08X%08X -> page %08X (the framebuffer is at %08X: %s)",
-            (uint32_t)(e >> 32), (uint32_t)e, (uint32_t)e & 0xFFFFF000u, m.framebuffer,
-            ((uint32_t)e & 0xFFFFF000u) == m.framebuffer ? "they agree" : "they DIFFER");
-    }
+    phys = (uint32_t)ggtt[surf >> 12] & 0xFFFFF000u;
+    say("the surface: GPU address %08X, physical %08X, aperture %08X", surf, phys, m.framebuffer);
+    trials[0].gpu = surf;
 
-    /* a second mapping of the same screen pages, uncached, for the engines
-       to write through: the firmware's own mapping is left as it is */
+    /* the attribute table: 3 uncached, 4 write-back LLC, 5 write-combining, 6 write-through */
+    WR(PPAT_LO, RD(PPAT_LO) & 0x00FFFFFFu);
+    WR(PPAT_HI, (RD(PPAT_HI) & 0xFF000000u) | 0x00020107u);
+    say("attribute table now %08X %08X", RD(PPAT_LO), RD(PPAT_HI));
+
+    /* three more mappings of the screen's pages */
     {
         uint32_t npages = (m.pitch * m.height + 4095) / 4096, i;
-        for (i = 0; i < npages; i++)
-            ggtt[(alias >> 12) + i] = (ggtt[(surf >> 12) + i] & ~0xFFFull) | PTE_UNCACHED;
+        for (t = 1; t < 4; t++)
+            for (i = 0; i < npages; i++)
+                ggtt[(trials[t].gpu >> 12) + i] = (ggtt[(surf >> 12) + i] & ~0xFFFull) | trials[t].flags;
         WR(GFX_FLSH_CNTL, 1);
-        say("the screen mapped again at %08X, uncached: %u pages", alias, npages);
+        say("the screen mapped three more times, %u pages each", npages);
     }
 
-    /* two XY_COLOR_BLT fills: (100,100)-(500,300) through the firmware's
-       cached mapping, (100,400)-(500,600) through ours; then a flush */
+    /* four XY_COLOR_BLT fills, one per mapping, then a flush */
     cmd = ring + 8;                                 /* after the eight no-ops */
-    cmd[0] = (2u << 29) | (0x50u << 22) | (3u << 20) | 5u;
-    cmd[1] = (3u << 24) | (0xF0u << 16) | (tiled ? 1u << 11 : 0) | (stride & 0xFFFF);
-    cmd[2] = (100u << 16) | 100u;
-    cmd[3] = (300u << 16) | 500u;
-    cmd[4] = surf;
-    cmd[5] = 0;
-    cmd[6] = 0xFFF0A020u;
-    cmd[7] = (2u << 29) | (0x50u << 22) | (3u << 20) | 5u;
-    cmd[8] = (3u << 24) | (0xF0u << 16) | (tiled ? 1u << 11 : 0) | (stride & 0xFFFF);
-    cmd[9] = (400u << 16) | 100u;
-    cmd[10] = (600u << 16) | 500u;
-    cmd[11] = alias;
-    cmd[12] = 0;
-    cmd[13] = 0xFFF0A020u;
-    cmd[14] = (0x26u << 23) | 2u;                   /* MI_FLUSH_DW */
-    cmd[15] = 0;
-    cmd[16] = 0;
-    cmd[17] = 0;
+    for (t = 0; t < 4; t++) {
+        uint32_t *c = cmd + t * 7;
+        c[0] = (2u << 29) | (0x50u << 22) | (3u << 20) | 5u;
+        c[1] = (3u << 24) | (0xF0u << 16) | (tiled ? 1u << 11 : 0) | (stride & 0xFFFF);
+        c[2] = ((uint32_t)trials[t].y << 16) | 100u;
+        c[3] = ((uint32_t)(trials[t].y + 200) << 16) | 500u;
+        c[4] = trials[t].gpu;
+        c[5] = 0;
+        c[6] = 0xFFF0A020u;
+    }
+    cmd[28] = (0x26u << 23) | 2u;                   /* MI_FLUSH_DW */
+    cmd[29] = 0;
+    cmd[30] = 0;
+    cmd[31] = 0;
     cache_flush(ring, 4096);
-    tail = 32 + 18 * 4;
+    tail = 32 + 32 * 4;
     WR(RING_TAIL(BCS), tail);
     n = poll_until(RING_HEAD(BCS), 0x1FFFFC, tail, 4000000);
 
-    /* did the pixels change?  read them back with the processor, on a grid */
-    fb = (volatile uint32_t *)m.framebuffer;
+    fb = (volatile uint32_t *)m.framebuffer;        /* the aperture: through the GPU */
+    dram = (volatile uint32_t *)phys;               /* the memory itself: what the display reads */
     {
-        uint32_t inside = fb[200 * (m.pitch / 4) + 300], outside = fb[700 * (m.pitch / 4) + 600];
-        int k, x, y, hit1 = 0, hit2 = 0, total = 0;
-        for (y = 0; y < 200; y += 10)
-            for (x = 0; x < 400; x += 10) {
-                total++;
-                if ((fb[(100 + y) * (m.pitch / 4) + 100 + x] & 0xFFFFFF) == 0xF0A020) hit1++;
-                if ((fb[(400 + y) * (m.pitch / 4) + 100 + x] & 0xFFFFFF) == 0xF0A020) hit2++;
-            }
-        note("rectangle through the cached mapping: %d of %d samples amber", hit1, total);
-        note("rectangle through our uncached mapping: %d of %d samples amber", hit2, total);
-        ok = (inside & 0xFFFFFF) == 0xF0A020 && (outside & 0xFFFFFF) != 0xF0A020;
-        if (n >= 0) {
-            copy_tests(alias, stride, tail, fb, m.pitch);
-            show_cursor();
-        }
-        sys_getkey();                               /* leave it on the screen until a key */
-        WR(CUR_CNTR(active_plane), 0);              /* the cursor away again */
+        int k, ap[4], dr[4], dr2[4], dr3[4];
+        for (t = 0; t < 4; t++) { ap[t] = count_amber(fb, m.pitch, trials[t].y); dr[t] = count_amber(dram, m.pitch, trials[t].y); }
+        for (k = 0; k < 3000000; k++) (void)RD(RING_HEAD(BCS));   /* a moment later */
+        for (t = 0; t < 4; t++) dr2[t] = count_amber(dram, m.pitch, trials[t].y);
+        show_cursor();
+        sys_getkey();                               /* the first look */
+        wbinvd();                                   /* every cache in the machine, written back */
+        for (t = 0; t < 4; t++) dr3[t] = count_amber(dram, m.pitch, trials[t].y);
+        sys_getkey();                               /* the second look: did they fill in? */
+        WR(CUR_CNTR(active_plane), 0);
         WR(CUR_BASE(active_plane), 0);
         sys_set_video_mode(3);
         for (k = 0; k < nlater; k++) say("%s", later[k]);
-        say("after the blit: head %08X tail %08X acthd %08X instdone %08X (%s)",
-            RD(RING_HEAD(BCS)), RD(RING_TAIL(BCS)), RD(RING_ACTHD(BCS)), RD(RING_INSTDONE(BCS)),
-            n < 0 ? "the head did NOT reach the tail" : "the head reached the tail");
-        say("pixel inside the rectangle %08X, outside %08X: %s", inside, outside,
-            ok ? "THE BLITTER PAINTED IT" : "the blitter did not paint it");
+        say("after the blits: head %08X tail %08X acthd %08X (%s)", RD(RING_HEAD(BCS)), RD(RING_TAIL(BCS)),
+            RD(RING_ACTHD(BCS)), n < 0 ? "the head did NOT reach the tail" : "the head reached the tail");
+        say("samples amber of 800: through the aperture / in memory at once / a moment later / after wbinvd");
+        for (t = 0; t < 4; t++)
+            say("  %-14s %3d / %3d / %3d / %3d", trials[t].name, ap[t], dr[t], dr2[t], dr3[t]);
+        ok = dr3[1] == 800 || dr3[2] == 800 || dr3[3] == 800;
     }
     return ok ? 0 : -1;
 }
