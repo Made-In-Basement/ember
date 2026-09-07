@@ -163,3 +163,42 @@ pointed at it; present = flush the damaged lines (wbinvd above 2 MB); the
 pointer is the cursor sprite.  The firmware's surface is restored on exit.
 Not yet used: the blitter (would need PPAT entry 0 uncached, and then all
 GGTT traffic is uncached, so the source must be flushed too).
+
+## The 3D engine (2026-09-07, RENDER.N32 runs 1-6)
+
+The render engine (RCS, registers at 2000h) runs in legacy ring mode as
+the firmware leaves it (GFX_MODE 2800: execlists off).  Its ring starts
+the same way as the blitter's.  A batch buffer (MI_BATCH_BUFFER_START
+18800001h, global table) carrying the Intel GPU tools' Broadwell
+render-copy sequence - PIPELINE_SELECT, STATE_SIP, empty push constants,
+STATE_BASE_ADDRESS with surface/dynamic/instruction bases at the batch,
+URB VS 64 entries of 2 from 2, blend and colour-calc pointers, every
+unused stage told so, CLIP off, SBE with one attribute read from URB
+offset 1, RASTER cull none, SF with no viewport transform, WM perspective
+pixel barycentric, PS with igt's 4-instruction blit.g7a kernel (SIMD16,
+setup data at GRF 6, 62 threads), a 32-bit XRGB linear render target and
+a 64x64 texture, nearest/clamp sampler, 3DPRIMITIVE - draws on the first
+try.  Field layouts checked against Mesa's gen80.xml.
+
+Learned on the way:
+- With CLIP off and the viewport transform off, the engine STILL divides
+  x, y, z by w.  Hand it x*w, y*w, z*w, w for perspective-correct
+  interpolation; with w = 1 the texture is affine.
+- A D32_FLOAT depth buffer works: 3DSTATE_DEPTH_BUFFER 2D, write enable,
+  pitch 12800, base in the table (treated as Y-tiled; allocate rows to a
+  multiple of 32), three PIPE_CONTROL depth stalls before it; WM_DEPTH_STENCIL
+  test ALWAYS + write for a full-rectangle clear at z = 1, then LESS.
+- The engine can be reset from software: RING_RESET_CTL (20D0h) request,
+  GDRST (941Ch) bit 1, then the ring restarted.  Used to bisect on the
+  laptop without reboots.  Every "stall" in the bisection was our own bug
+  (state not written; a stale completion word).
+- The clock: RP_STATE_CAP is at 145998h (not 140000h), rp0 [7:0] and rpn
+  [23:16] in 50 MHz; RPSTAT1 (A01Ch) bits 13:7 is the running clock.  The
+  firmware leaves it at 300 MHz; frame time scaled exactly with the clock.
+  RPNSWREQ (A008h) takes ratio << 24 on Broadwell; RP_CONTROL A024h.
+- Write-combining (PPAT entry 0 = 1) made no difference to fill time:
+  the engine is clock-bound at this size, not memory-bound.
+- Full-screen fill at 300 MHz: 24 ms; the cube alone is a small fraction.
+
+The desktop's gpu3d.c is the service built on this; Solid's GPU button
+exercises it.
