@@ -303,11 +303,18 @@ def build_gpu():
     build_app('gpu', [os.path.join(ROOT, 'nano', 'gpu', 'gpu.c')], 'GPU.N32')
 
 
+def build_render():
+    """RENDER.N32: a textured triangle from the 3D engine."""
+    build_app('render', [os.path.join(ROOT, 'nano', 'gpu', 'render.c')], 'RENDER.N32')
+
+
 if __name__ == '__main__':
     if '--hello' in sys.argv:
         build_hello()
     elif '--gpu' in sys.argv:
         build_gpu()
+    elif '--render' in sys.argv:
+        build_render()
     elif '--player' in sys.argv:
         build_player()
     elif '--gui' in sys.argv:
