@@ -104,6 +104,33 @@ Four ticks is 220 ms and the old budget ran out at three often enough to
 fail a good host - and a real processor spins that loop faster than QEMU
 does, so it would have failed on the laptop as well.
 
+Ten of twelve then, stopping at the callback with #GP(0) on `cb_proc`'s read
+of the real-mode stack it is handed.  `desc_set_base_limit` popped in the
+order it had pushed, so `pop ecx` took the saved ESI and the limit written
+was whatever ESI held on entry - and its one caller, `callback_enter`,
+arrives straight out of a `rep movsw`, so the callback's stack selector came
+out about 54DEh long instead of FFFFh.  The pops run in LIFO order now and
+EAX, ECX and ESI all come back untouched.
+
+## Descriptors are checked against what was asked for
+
+Three hardware trips went to descriptor routines that scramble a register:
+QEMU builds the same wrong descriptor and never complains, because it
+enforces a data segment's base and nothing else.  So `desc_new` and
+`desc_set_base_limit` now end in `desc_check`, which reads the descriptor
+back through the same `desc_addr` path, reassembles base and limit, and
+stops the client if either differs from what the caller asked for (a
+page-granular limit counts as wrong: every descriptor the host builds for
+itself is byte granular).  The report comes out in real mode, like a fault:
+
+    DPMI: descriptor 0047 was asked for base 000FFFF0 limit 0000FFFF, reads back base 000FFFF0 limit 000054DE
+
+That line is from QEMU, with the `desc_set_base_limit` bug deliberately put
+back - the class of bug that used to need the laptop now fails on the
+desk.  Descriptors the *client* sets through INT 31h 0007h and 0008h are
+written inline and are not checked: they are the client's business, and
+0008h is allowed to be page granular.
+
 ## The exact symptom (DOS/4GW)
 
 After the banner, DOS/4GW's 32-bit loader (a 16-bit code segment at

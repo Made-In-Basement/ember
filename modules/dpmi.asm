@@ -854,6 +854,8 @@ rm_entry:
         je      rm_fault
         cmp     byte [rm_kind], 5
         je      rm_resume
+        cmp     byte [rm_kind], 6
+        je      rm_desc_bad
         call    rm_run
         mov     byte [pm_entry_kind], 0
         jmp     enter_pm
@@ -893,6 +895,51 @@ rm_terminate:
         mov     ax, 0x4C00
         int     0x21
         jmp     $
+
+; rm_desc_bad: a descriptor the host built does not read back as it was
+;   asked for - a bug in this host, not in the client.  Say which and what,
+;   and end the program before the client faults on it somewhere less
+;   informative.
+rm_desc_bad:
+        mov     byte [client_active], 0
+        call    psp_env_restore
+        call    xms_give
+        mov     si, msg_desc_bad
+        SVC     SVC_PUTS
+        mov     ax, [dc_sel]
+        SVC     SVC_PRINT_HEX16
+        mov     si, msg_desc_want
+        SVC     SVC_PUTS
+        mov     si, dc_base
+        call    rm_print_hex32
+        mov     si, msg_desc_limit
+        SVC     SVC_PUTS
+        mov     si, dc_limit
+        call    rm_print_hex32
+        mov     si, msg_desc_got
+        SVC     SVC_PUTS
+        mov     si, dc_got_base
+        call    rm_print_hex32
+        mov     si, msg_desc_limit
+        SVC     SVC_PUTS
+        mov     si, dc_got_limit
+        call    rm_print_hex32
+        SVC     SVC_CRLF
+        mov     ax, 0x4CFF
+        int     0x21
+        jmp     $
+
+; rm_print_hex32: SI -> a dword, print it (the services take and take back SI)
+rm_print_hex32:
+        push    si
+        mov     ax, [si+2]
+        SVC     SVC_PRINT_HEX16
+        pop     si
+        push    si
+        mov     ax, [si]
+        SVC     SVC_PRINT_HEX16
+        pop     si
+        ret
 
 ; rm_fault: an exception nobody handled.  Say where, and end the program.
 rm_fault:
@@ -990,6 +1037,15 @@ msg_no_xms:     db "DPMI: needs extended memory - LOAD XMS first", 13, 10, 0
 msg_fault:      db "DPMI: unhandled exception ", 0
 msg_fault_at:   db " at ", 0
 msg_fault_err:  db " error ", 0
+msg_desc_bad:   db "DPMI: descriptor ", 0
+msg_desc_want:  db " was asked for base ", 0
+msg_desc_limit: db " limit ", 0
+msg_desc_got:   db ", reads back base ", 0
+dc_sel:         dw 0
+dc_base:        dd 0
+dc_limit:       dd 0
+dc_got_base:    dd 0
+dc_got_limit:   dd 0
 
 section .data
                 align 16

@@ -972,6 +972,7 @@ desc_new:
         mov     [gs:esi + 5], dl
         pop     ecx
         pop     eax
+        call    desc_check
         clc
         ret
 .none:  pop     ecx
@@ -990,17 +991,19 @@ desc_set_32:
         pop     ecx
         ret
 
-; desc_set_base_limit: BX = selector, EAX = base, ECX = limit (byte granular)
+; desc_set_base_limit: BX = selector, EAX = base, ECX = limit (byte granular).
+;   EAX, ECX and ESI come back as they went in.  The pops used to run in the
+;   same order as the pushes, so the limit written was whatever ESI held on
+;   entry - and the one caller arrives straight out of a REP MOVSW.
 desc_set_base_limit:
-        push    ecx
+        push    ecx                             ; the limit
         push    esi
-        push    eax
+        push    eax                             ; the base
         mov     ecx, ebx
         call    desc_addr
-        pop     eax
-        pop     ecx
+        mov     eax, [esp]                      ; the base again
         jc      .out
-        push    ecx
+        mov     ecx, [esp + 8]                  ; the limit again
         mov     [gs:esi + 2], ax
         shr     eax, 16
         mov     [gs:esi + 4], al
@@ -1010,9 +1013,67 @@ desc_set_base_limit:
         and     cl, 0x0F
         and     byte [gs:esi + 6], 0xF0
         or      [gs:esi + 6], cl
+        mov     eax, [esp]                      ; as they were asked for
+        mov     ecx, [esp + 8]
+        call    desc_check
+.out:   pop     eax
+        pop     esi
         pop     ecx
-.out:   pop     esi
         ret
+
+; desc_check: BX = selector, EAX = base, ECX = limit, as they were asked for.
+;   Reads the descriptor back through the same path that wrote it and stops
+;   the client if it does not say what it was told to.  A descriptor is
+;   written once and only the processor reads it after that, and QEMU
+;   enforces neither a data segment's limit nor much else about one, so a
+;   routine that scrambles a register on the way is invisible there until
+;   real silicon faults on the client.  Three of those cost a trip each.
+;   Only the host's own descriptors come through here: they are all byte
+;   granular, so a page-granular one is wrong by definition.
+desc_check:
+        push    eax
+        push    ecx
+        push    edx
+        push    esi
+        mov     [dc_base], eax
+        mov     [dc_limit], ecx
+        mov     [dc_sel], bx
+        mov     dword [dc_got_base], -1
+        mov     dword [dc_got_limit], -1
+        movzx   ecx, bx
+        call    desc_addr
+        jc      .bad
+        movzx   eax, word [gs:esi + 2]          ; the base, reassembled
+        movzx   edx, byte [gs:esi + 4]
+        shl     edx, 16
+        or      eax, edx
+        movzx   edx, byte [gs:esi + 7]
+        shl     edx, 24
+        or      eax, edx
+        mov     [dc_got_base], eax
+        movzx   eax, word [gs:esi]              ; the limit, with its high nibble
+        movzx   ecx, byte [gs:esi + 6]
+        mov     edx, ecx
+        and     edx, 0x0F
+        shl     edx, 16
+        or      eax, edx
+        mov     [dc_got_limit], eax
+        test    cl, 0x80                        ; page granular: not one of ours
+        jnz     .bad
+        cmp     eax, [dc_limit]
+        jne     .bad
+        mov     eax, [dc_got_base]
+        cmp     eax, [dc_base]
+        jne     .bad
+        pop     esi
+        pop     edx
+        pop     ecx
+        pop     eax
+        ret
+.bad:   mov     byte [rm_kind], 6
+        mov     esp, [r0_top]                   ; whatever the stack was
+        sub     esp, 0x100
+        call    depart                          ; does not come back
 
 ; ldt_alloc: ECX consecutive free entries -> EBX = the first.  CF=1 if none.
 ldt_alloc:
