@@ -51,6 +51,15 @@ DPMI_E_SELECTOR equ 0x8022
 DPMI_E_HANDLE   equ 0x8023
 DPMI_E_CALLBACK equ 0x8024
 
+; FLAGS_KNOWN: EFLAGS as the host wants them - NT clear above all, and DF,
+;   TF and IOPL with it.  Real mode's flags cross into protected mode on the
+;   far jump, and NT turns every IRET here into a task return.  It needs a
+;   stack, so it goes after ESP is loaded, never before.
+%macro FLAGS_KNOWN 0
+        push    dword 2
+        popfd
+%endmacro
+
 [BITS 32]
 ; =============================================================================
 ; pm_first_entry: protected mode for the first time with this client.
@@ -65,6 +74,12 @@ pm_first_entry:
         mov     gs, ax
         mov     ss, ax
         mov     esp, [r0_top]
+        ; Real mode's flags came through the far jump untouched.  NT there is
+        ; only a bit; here it turns the IRET at the end of this routine into a
+        ; task return through the TSS's back link, which is null: #TS(0) before
+        ; the client's first instruction.  A known EFLAGS instead - and not
+        ; before now: this is the first instant there is a stack to push on.
+        FLAGS_KNOWN
         mov     ax, SEL_TSS
         ltr     ax
         mov     ax, SEL_LDT
@@ -189,6 +204,8 @@ int_common:
         push    ecx
         mov     al, 0x0B                        ; OCW3: read the in-service register
         out     0x20, al
+        jmp     short $+2                       ; the controller needs a moment
+        jmp     short $+2                       ;  between the write and the read
         in      al, 0x20
         mov     ecx, [esp+8]
         sub     ecx, 8
@@ -737,14 +754,17 @@ pm_reenter:
         dec     eax
         js      .raw_top
         mov     esp, [nest_esp + eax*4]
+        FLAGS_KNOWN
         jmp     raw_pm_enter
 .raw_top:
         mov     esp, [r0_top]
+        FLAGS_KNOWN
         jmp     raw_pm_enter
 .returning:
         dec     byte [nest_depth]
         movzx   eax, byte [nest_depth]
         mov     esp, [nest_esp + eax*4]
+        FLAGS_KNOWN
         call    set_esp0
         pop     edi
         pop     esi
@@ -756,10 +776,12 @@ pm_reenter:
         dec     eax
         js      .no_excursion
         mov     esp, [nest_esp + eax*4]
+        FLAGS_KNOWN
         jmp     callback_enter
 .no_excursion:
         mov     esp, [r0_top]                   ; a callback with the client in
-        jmp     callback_enter                  ;  real mode: nothing pending
+        FLAGS_KNOWN                             ;  real mode: nothing pending
+        jmp     callback_enter
 
 ; set_esp0: the ring-0 stack an interrupt from ring 3 must use
 set_esp0:

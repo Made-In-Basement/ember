@@ -24,7 +24,39 @@ mode, which is what makes Hexen and Doom run today.
   a client runs, and function 0306h (raw mode switch) must exist because
   DOS/4GW stores its answer without checking for an error.
 
-## The exact symptom
+## On real hardware
+
+Everything above is QEMU.  The module was then run on the Broadwell laptop,
+where `LOAD DPMI` announced itself and `XMSTEST` confirmed the modules are
+resident in the high memory area, but `DPMITEST` stopped with
+
+    DPMI: unhandled exception 138 at 0008:000019C2 error 00000000
+
+138 is 0x80 | 10: the host's own report of #TS, taken inside host code
+(`SEL_HCODE32`).  0x19C2 is the module's ORG plus 0x9C2, which is the `iretd`
+at the end of `pm_first_entry` - the instruction that first puts the client
+at ring 3.  An IRET raises #TS with error code 0 in exactly one way: with NT
+set it is a task *return*, and it reads the back link of the current TSS,
+which is zero.
+
+NT arrives from real mode.  The client far-calls the entry point, the host
+switches to protected mode with a far jump, and EFLAGS crosses over
+untouched; in real mode NT means nothing, so nobody had cleared it.  QEMU
+happened to have it clear and the laptop's firmware did not.  The kernel's
+own 32-bit mode (`src/pm32.asm`) is not exposed to this: its IRETs are all
+inside handlers entered through interrupt gates, and a gate clears NT.
+
+The fix is to start from a known EFLAGS on every arrival from real mode: the
+`FLAGS_KNOWN` macro (`push dword 2` / `popfd`).  It needs a stack, so it goes
+*after* the ring-0 stack pointer is loaded and never before - once at
+`pm_first_entry`, and once in each of `pm_reenter`'s five branches, since each
+of those chooses its own ESP and a single copy at the top would either push
+into whatever linear address real mode left in ESP or, hoisted to `r0_top`,
+tread on the outermost frame when an excursion is nested.  The interrupt
+controller's in-service read in `int_common` gained the settling delay between
+the OCW3 write and the read that a real 8259 wants, which QEMU never needed.
+
+## The exact symptom (DOS/4GW)
 
 After the banner, DOS/4GW's 32-bit loader (a 16-bit code segment at
 selector 87h, base 1204E0h) tries to load a selector it does not own
