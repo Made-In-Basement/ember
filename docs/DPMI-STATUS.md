@@ -56,6 +56,34 @@ tread on the outermost frame when an excursion is nested.  The interrupt
 controller's in-service read in `int_common` gained the settling delay between
 the OCW3 write and the read that a real 8259 wants, which QEMU never needed.
 
+With that in, the laptop got one instruction further and stopped with
+
+    DPMI: unhandled exception 13 at 0007:000001A9 error 00000000
+
+0007 is the client's own CS at ring 3 and 1A9 is `DPMITEST`'s first
+instruction, a write through DS - so the host had handed it a DS it could
+not write to.  `desc_new` was the reason: it took the limit apart with
+`shr ecx, 16` in place, so ECX came back as 0, and `pm_first_entry` set the
+limit once and let it stand across the calls that follow.  CS got 0FFFFh;
+DS and SS got a segment one byte long.
+
+QEMU passed the whole self-test anyway, because **QEMU does not enforce the
+limit of a data segment** - only the base.  The LDT it built during a clean
+run says so outright:
+
+    idx 0 sel 0007  base 00018060 limit 0FFFF  acc FB   <- CS
+    idx 1 sel 000F  base 00018060 limit 00000  acc F3   <- DS
+    idx 2 sel 0017  base 00018060 limit 00000  acc F2   <- SS
+    idx 3 sel 001F  base 00018060 limit 000FF  acc F3   <- PSP
+    idx 4 sel 0027  base 00018010 limit 0FFFF  acc F2   <- environment
+    idx 5 sel 002F  base 00116000 limit 07FFF  acc F2   <- locked stack
+
+(`tools/qemu_test.py --pmemsave 0x110000,64,build/ldt.bin` - the client's
+region starts at `LOW_BASE` and the LDT is at the front of it, so the
+descriptors are still readable after the client has left.)  `desc_new` now
+gives EAX and ECX back untouched, and `pm_first_entry` states the limit at
+every call rather than leaving one standing.
+
 ## The exact symptom (DOS/4GW)
 
 After the banner, DOS/4GW's 32-bit loader (a 16-bit code segment at

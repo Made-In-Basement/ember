@@ -104,11 +104,13 @@ pm_first_entry:
         mov     [cl_cs], bx
         movzx   eax, word [ent_ds]
         shl     eax, 4
+        mov     ecx, 0xFFFF
         mov     dl, 0xF2                        ; data, DPL 3
         call    desc_new
         mov     [cl_ds], bx
         movzx   eax, word [ent_ss]
         shl     eax, 4
+        mov     ecx, 0xFFFF
         mov     dl, 0xF2
         call    desc_new
         mov     [cl_ss], bx
@@ -942,20 +944,23 @@ desc_valid:
 
 ; desc_new: a fresh LDT descriptor.  EAX = base, ECX = limit (byte
 ;   granular, < 1 MB), DL = access byte -> BX = selector.  CF=1 if none.
+;   Both come back as they went in.  They did not once: the routine took
+;   the limit apart with SHR in place, so a second call that let the first
+;   one's limit stand got a segment of one byte, and the client faulted on
+;   its first write to DS.  QEMU never noticed - it does not enforce the
+;   limit of a data segment.
 desc_new:
         push    eax
         push    ecx
         mov     ecx, 1
         call    ldt_alloc                       ; -> EBX = first index
-        pop     ecx
-        pop     eax
         jc      .none
-        push    ecx
         shl     ebx, 3
         or      ebx, 7
         mov     ecx, ebx
         call    desc_addr
-        pop     ecx
+        mov     eax, [esp + 4]                  ; the base and the limit again
+        mov     ecx, [esp]
         mov     [gs:esi + 2], ax
         shr     eax, 16
         mov     [gs:esi + 4], al
@@ -965,9 +970,13 @@ desc_new:
         and     cl, 0x0F
         mov     [gs:esi + 6], cl
         mov     [gs:esi + 5], dl
+        pop     ecx
+        pop     eax
         clc
         ret
-.none:  stc
+.none:  pop     ecx
+        pop     eax
+        stc
         ret
 
 ; desc_set_32: BX = selector: make it a 32-bit segment (D/B set)
