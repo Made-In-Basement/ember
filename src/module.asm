@@ -1,20 +1,30 @@
 ; =============================================================================
-;  module.asm - resident modules: drivers that live in a segment of their own
+;  module.asm - resident modules: drivers that live in the high memory area
 ; -----------------------------------------------------------------------------
 ;  The kernel's single 64 KB segment is full.  Anything that stays resident
 ;  from now on - a memory manager, a DPMI host, a device driver - is a module:
-;  a flat binary with a 32-byte header, loaded from a file into a block of
-;  conventional memory that belongs to the system, so it survives the programs
-;  that come and go.  LOAD puts one in place, UNLOAD takes it out again.
+;  a flat binary with a 32-byte header, loaded from a file by LOAD and taken
+;  out again by UNLOAD.
+;
+;  Where it goes matters: conventional memory is what DOS programs run in,
+;  and every kilobyte taken there is a kilobyte a game may miss.  So modules
+;  live in the high memory area, the 64 KB just above the megabyte that real
+;  mode reaches as segment FFFFh once the A20 line is on (it is: the kernel
+;  needs it for everything above a megabyte).  A flat binary cannot be moved
+;  about, so each module is assembled for a fixed offset in that segment, its
+;  slot, and says so in its header.  If the high memory area cannot be had -
+;  the slot is taken, or A20 will not switch - the module is put in
+;  conventional memory instead, at that same offset within a block of its
+;  own, which wastes the offset but keeps the code right.
 ;
 ;  The header (see modules/ember.inc, which modules include):
 ;     +0   "EMOD"                     +4   header version (1)
 ;     +6   flags (unused)             +8   name, 8 bytes, upper case, padded
 ;     +16  init entry                 +18  unload entry (0 = none)
-;     +20  event entry (0 = none)     +22  paragraphs wanted (0 = the file)
-;     +24  paragraphs kept after init (0 = all)
+;     +20  event entry (0 = none)     +22  the slot: offset in segment FFFFh
+;     +24  paragraphs kept after init (0 = all; conventional loads only)
 ;     +26  far pointer to the kernel's service table, written by the loader
-;     +30  reserved                   +32  code
+;     +30  size in paragraphs, written by the loader
 ;
 ;  The kernel far-calls the entries with DS = the module's segment:
 ;     init    ES:SI = the rest of the command line.  CF=1 refuses the load.
@@ -35,10 +45,12 @@ MH_NAME         equ 8
 MH_INIT         equ 16
 MH_UNLOAD       equ 18
 MH_EVENT        equ 20
-MH_PARAS        equ 22
+MH_ORG          equ 22
 MH_RESIDENT     equ 24
 MH_SERVICES     equ 26
+MH_PARAS        equ 30
 MH_SIZE         equ 32
+HMA_SEG         equ 0xFFFF
 
 MOD_EV_PROMPT   equ 0
 MOD_EV_START    equ 1
@@ -70,33 +82,40 @@ cmd_unload:
 ; -----------------------------------------------------------------------------
 mod_list:
         mov     bx, mod_table
-        cmp     word [bx], 0
+        cmp     word [bx+2], 0
         jne     .some
         mov     si, msg_mod_none
         call    puts
         ret
 .some:  mov     si, msg_mod_head
         call    puts
-.next:  mov     ax, [bx]
-        or      ax, ax
-        jz      .done
+.next:  cmp     word [bx+2], 0
+        je      .done
         push    bx
-        mov     es, ax
+        les     di, [bx]                        ; ES:DI -> the header
         mov     al, ' '
         call    putc
         call    putc
-        mov     si, MH_NAME
+        lea     si, [di + MH_NAME]
         mov     cx, 8
         call    mod_puts_es                     ; the name
         mov     al, ' '
         call    putc
         call    putc
         mov     ax, es
-        call    print_hex16                     ; its segment
-        mov     ax, es
-        dec     ax
-        mov     es, ax                          ; its MCB: the size in paragraphs
-        movzx   eax, word [es:MCB_SIZE]
+        cmp     ax, HMA_SEG
+        jne     .low
+        mov     si, msg_mod_hma
+        call    puts
+        mov     ax, di
+        call    print_hex16
+        jmp     .size
+.low:   call    print_hex16                     ; its segment
+        mov     al, ':'
+        call    putc
+        mov     ax, di
+        call    print_hex16
+.size:  movzx   eax, word [es:di + MH_PARAS]
         add     eax, 63
         shr     eax, 6                          ; -> KB, rounded up
         mov     cl, 6
@@ -104,8 +123,9 @@ mod_list:
         mov     si, msg_mod_kb
         call    puts
         pop     bx
-        add     bx, 2
-        jmp     .next
+        add     bx, 4
+        cmp     bx, mod_table + MOD_MAX * 4
+        jb      .next
 .done:  mov     ax, cs
         mov     es, ax
         ret
@@ -152,7 +172,7 @@ mod_load:
 .store: call    upcase
         stosb
         inc     cx
-        cmp     cx, 70
+        cmp     cx, 60
         jb      .copy
 .name_end:
         dec     si
@@ -188,6 +208,8 @@ mod_load:
         jb      .bad_format
         cmp     dword [found_size], 0x10000
         ja      .bad_format
+        push    cs
+        pop     es
         call    fstream_open
         mov     di, mod_hdr
         mov     ecx, MH_SIZE
@@ -202,50 +224,61 @@ mod_load:
         jnc     .already
         ; ---- a free table entry ----
         mov     bx, mod_table
-.slot:  cmp     word [bx], 0
+.slot:  cmp     word [bx+2], 0
         je      .have_slot
-        add     bx, 2
-        cmp     bx, mod_table + MOD_MAX * 2
+        add     bx, 4
+        cmp     bx, mod_table + MOD_MAX * 4
         jb      .slot
         mov     si, msg_mod_full
         call    puts
         ret
 .have_slot:
         mov     [mod_slot], bx
-        ; ---- memory: the file, or more if the header asks ----
+        mov     ax, [mod_hdr + MH_ORG]
+        mov     [mod_org], ax
         mov     eax, [found_size]
         add     eax, 15
         shr     eax, 4
-        mov     bx, [mod_hdr + MH_PARAS]
-        cmp     bx, ax
-        jae     .paras_ok
+        mov     [mod_paras], ax
+        ; ---- the high memory area, if the slot is there ----
+        cmp     word [mod_org], 0x10
+        jb      .low_memory                     ; (0: a module that wants it low)
+        movzx   eax, word [mod_org]
+        add     eax, [found_size]
+        cmp     eax, 0x10000
+        ja      .low_memory
+        call    hma_free                        ; CF=1: the slot is taken
+        jc      .low_memory
+        call    a20_check                       ; CF=1: no high memory area
+        jc      .low_memory
+        mov     word [mod_seg], HMA_SEG
+        jmp     .place
+.low_memory:
+        ; conventional memory: a block holding offset + image
+        movzx   eax, word [mod_org]
+        add     eax, [found_size]
+        add     eax, 15
+        shr     eax, 4
         mov     bx, ax
-.paras_ok:
         cmp     bx, 0x1000
         ja      .bad_format
         call    mem_alloc_system                ; AX = the segment
         jc      .no_memory
         mov     [mod_seg], ax
-        ; ---- load it, and zero the rest ----
+.place: ; ---- load it ----
         call    fstream_open
         mov     es, [mod_seg]
-        xor     di, di
+        mov     di, [mod_org]
         mov     ecx, [found_size]
         call    fstream_read
         mov     es, [mod_seg]
-        mov     di, [found_size]                ; 0 only for a 64 KB file
-        or      di, di
-        jz      .zeroed
-        mov     cx, bx
-        shl     cx, 4                           ; wraps to 0 for 4096 paragraphs:
-        sub     cx, di                          ;  0 - size is still the right count
-        xor     al, al
-        rep     stosb
-.zeroed:
-        mov     word [es:MH_SERVICES], mod_services
-        mov     word [es:MH_SERVICES + 2], cs
+        mov     di, [mod_org]
+        mov     word [es:di + MH_SERVICES], mod_services
+        mov     word [es:di + MH_SERVICES + 2], cs
+        mov     ax, [mod_paras]
+        mov     [es:di + MH_PARAS], ax
         ; ---- init ----
-        mov     ax, [es:MH_INIT]
+        mov     ax, [es:di + MH_INIT]
         mov     [mod_call], ax
         mov     [mod_call + 2], es
         mov     si, [mod_args]
@@ -257,25 +290,35 @@ mod_load:
         mov     ds, ax
         mov     es, ax
         jc      .refused
-        ; ---- keep what it wants kept ----
+        ; ---- in conventional memory, keep only what it wants kept ----
+        cmp     word [mod_seg], HMA_SEG
+        je      .keep_all
         mov     bx, [mod_hdr + MH_RESIDENT]
         or      bx, bx
         jz      .keep_all
+        mov     ax, [mod_org]
+        shr     ax, 4
+        add     bx, ax
         mov     es, [mod_seg]
         call    mem_resize                      ; smaller is always possible
         mov     ax, cs
         mov     es, ax
 .keep_all:
         mov     bx, [mod_slot]
-        mov     ax, [mod_seg]
+        mov     ax, [mod_org]
         mov     [bx], ax
+        mov     ax, [mod_seg]
+        mov     [bx+2], ax
         clc
         ret
 .refused:
+        cmp     word [mod_seg], HMA_SEG
+        je      .refused_high
         mov     es, [mod_seg]
         call    mem_free
         mov     ax, cs
         mov     es, ax
+.refused_high:
         mov     si, msg_mod_refused
         call    puts
         stc
@@ -301,6 +344,69 @@ mod_load:
         stc
         ret
 
+; hma_free: does [mod_org, mod_org + found_size) miss every module in the
+;   high memory area?  CF=1 if not.
+hma_free:
+        push    bx
+        push    es
+        push    dx
+        mov     bx, mod_table
+.next:  cmp     word [bx+2], HMA_SEG
+        jne     .skip
+        les     di, [bx]
+        ; theirs: [DI, DI + paras*16)   ours: [mod_org, mod_org + size)
+        movzx   eax, word [es:di + MH_PARAS]
+        shl     eax, 4
+        movzx   edx, di
+        add     eax, edx                        ; their end
+        movzx   edx, word [mod_org]
+        cmp     edx, eax
+        jae     .skip                           ; we start after they end
+        movzx   eax, word [mod_org]
+        add     eax, [found_size]               ; our end
+        movzx   edx, di
+        cmp     eax, edx
+        jbe     .skip                           ; we end before they start
+        stc
+        jmp     .out
+.skip:  add     bx, 4
+        cmp     bx, mod_table + MOD_MAX * 4
+        jb      .next
+        clc
+.out:   pop     dx
+        pop     es
+        pop     bx
+        ret
+
+; a20_check: switch A20 on (as enter_unreal does) and prove it: memory at
+;   FFFF:0010 must not be memory at 0000:0000.  CF=1 if it is.
+a20_check:
+        push    es
+        push    fs
+        push    ax
+        push    bx
+        call    enter_unreal                    ; enables A20 on its way
+        xor     ax, ax
+        mov     es, ax
+        mov     ax, HMA_SEG
+        mov     fs, ax
+        cli
+        mov     ax, [es:0x0000]
+        mov     bx, [fs:0x0010]
+        xor     word [fs:0x0010], 0x5A5A        ; touch high, watch low
+        cmp     ax, [es:0x0000]
+        mov     [fs:0x0010], bx
+        sti
+        jne     .wraps
+        clc
+        jmp     .out
+.wraps: stc
+.out:   pop     bx
+        pop     ax
+        pop     fs
+        pop     es
+        ret
+
 ; -----------------------------------------------------------------------------
 ; mod_unload: DS:SI = name.  Only the module loaded last can go: an earlier
 ;   one may have vectors hooked behind it, and the chain would break.
@@ -323,24 +429,30 @@ mod_unload:
 .named: mov     si, mod_name
         call    mod_find_name                   ; BX -> the entry
         jc      .not_loaded
-        cmp     word [bx+2], 0                  ; another one after it?
+        cmp     bx, mod_table + (MOD_MAX - 1) * 4
+        jae     .is_last
+        cmp     word [bx+6], 0                  ; another one after it?
         jne     .not_last
-        mov     es, [bx]
-        mov     ax, [es:MH_UNLOAD]
+.is_last:
+        les     di, [bx]
+        mov     ax, [es:di + MH_UNLOAD]
         or      ax, ax
         jz      .free
         mov     [mod_call], ax
         mov     [mod_call + 2], es
         push    bx
-        mov     ds, [bx]
+        mov     ds, [bx+2]
         call    far [cs:mod_call]
         pop     bx
         mov     ax, cs
         mov     ds, ax
         jc      .busy
-        mov     es, [bx]
-.free:  call    mem_free
-        mov     word [bx], 0
+.free:  cmp     word [bx+2], HMA_SEG
+        je      .gone
+        mov     es, [bx+2]
+        call    mem_free
+.gone:  mov     word [bx], 0
+        mov     word [bx+2], 0
         mov     ax, cs
         mov     es, ax
         mov     si, msg_mod_unloaded
@@ -371,19 +483,19 @@ mod_find_name:
         push    di
         push    es
         mov     bx, mod_table
-.next:  mov     ax, [bx]
-        or      ax, ax
-        jz      .none
-        mov     es, ax
+.next:  cmp     word [bx+2], 0
+        je      .skip
+        les     di, [bx]
+        add     di, MH_NAME
         push    si
-        mov     di, MH_NAME
         mov     cx, 8
         repe    cmpsb
         pop     si
         je      .found
-        add     bx, 2
-        jmp     .next
-.none:  stc
+.skip:  add     bx, 4
+        cmp     bx, mod_table + MOD_MAX * 4
+        jb      .next
+        stc
         jmp     .out
 .found: clc
 .out:   pop     es
@@ -400,24 +512,24 @@ mod_event:
         push    ds
         push    es
         mov     bx, mod_table
-.next:  cmp     word [cs:bx], 0
-        je      .done
-        mov     es, [cs:bx]
-        mov     dx, [es:MH_EVENT]
+.next:  cmp     word [cs:bx+2], 0
+        je      .skip
+        les     di, [cs:bx]
+        mov     dx, [es:di + MH_EVENT]
         or      dx, dx
         jz      .skip
         mov     [cs:mod_call], dx
         mov     [cs:mod_call + 2], es
         push    bx
         push    ax
-        mov     ds, [cs:bx]
+        mov     ds, [cs:bx+2]
         call    far [cs:mod_call]
         pop     ax
         pop     bx
-.skip:  add     bx, 2
-        cmp     bx, mod_table + MOD_MAX * 2
+.skip:  add     bx, 4
+        cmp     bx, mod_table + MOD_MAX * 4
         jb      .next
-.done:  pop     es
+        pop     es
         pop     ds
         popad
         ret
@@ -538,6 +650,7 @@ svc_log_copy:
 section .data
 msg_mod_head:       db "Loaded modules:", 13, 10, 0
 msg_mod_none:       db "No modules are loaded.  LOAD <name> loads NAME.MOD.", 13, 10, 0
+msg_mod_hma:        db "high ", 0
 msg_mod_kb:         db " KB", 13, 10, 0
 msg_mod_not_found:  db "Module not found", 13, 10, 0
 msg_mod_bad:        db "Not a module file", 13, 10, 0
@@ -551,11 +664,13 @@ msg_mod_unloaded:   db "Module unloaded", 13, 10, 0
 msg_mod_unload_usage: db "Usage: UNLOAD <name>", 13, 10, 0
 
 section .bss
-mod_table:      resw MOD_MAX                    ; segments, in load order
+mod_table:      resd MOD_MAX                    ; offset, segment of each header
 mod_hdr:        resb MH_SIZE
 mod_name:       resb 8
 mod_call:       resd 1
 mod_seg:        resw 1
+mod_org:        resw 1
+mod_paras:      resw 1
 mod_slot:       resw 1
 mod_args:       resw 1
 section .text

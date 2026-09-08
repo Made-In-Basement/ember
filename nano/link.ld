@@ -3,7 +3,7 @@ OUTPUT_FORMAT(elf32-i386)
 ENTRY(_start)
 SECTIONS
 {
-    . = 0x100000;
+    . = 0x110000;
     .nxhdr  : { KEEP(*(.nxhdr)) }
     .text   : { *(.text .text.*) }
     .rodata : { *(.rodata .rodata.*) }

@@ -188,6 +188,7 @@ def main():
     ap.add_argument("--after", type=float, default=1.0, help="seconds to wait before capture")
     ap.add_argument("--png", default="", help="save a screenshot PNG")
     ap.add_argument("--port", type=int, default=4488)
+    ap.add_argument("--mem", type=int, default=64, help="RAM in MB (default 64)")
     ap.add_argument("--shift", action="store_true", help="hold Shift during boot")
     ap.add_argument("--shift-delay", type=float, default=0.7,
                     help="seconds after start before pressing Shift")
@@ -199,11 +200,15 @@ def main():
     ap.add_argument("--regs", action="store_true",
                     help="stop on triple fault instead of rebooting and print the CPU registers")
     ap.add_argument("--qemulog", default="", help="write QEMU's interrupt/exception log to this file")
+    ap.add_argument("--moncmd", default="", help="a QEMU monitor command to run at the end (e.g. 'info pic')")
+    ap.add_argument("--logmask", default="", help="switch QEMU's log to this mask (e.g. exec,int) after the keys")
+    ap.add_argument("--logmask-delay", type=float, default=0.3,
+                    help="seconds after the keys before --logmask takes effect")
     args = ap.parse_args()
 
     qemu = find_qemu()
     img = str(Path(args.img).resolve())
-    cmd = [qemu, "-m", "64", "-display", "none", "-rtc", "base=localtime",
+    cmd = [qemu, "-m", str(args.mem), "-display", "none", "-rtc", "base=localtime",
            "-monitor", f"tcp:127.0.0.1:{args.port},server,nowait"]
     if args.regs:
         cmd += ["-no-reboot", "-no-shutdown"]
@@ -235,6 +240,9 @@ def main():
         time.sleep(args.wait)
         if args.keys:
             type_keys(mon, args.keys)
+        if args.logmask:
+            time.sleep(args.logmask_delay)
+            mon.cmd("log " + args.logmask)
         if args.mouse:
             mouse_actions(mon, args.mouse)
         if args.keys2:
@@ -242,6 +250,8 @@ def main():
         time.sleep(args.after)
         for line in screen_text(mon, tmpdir / "screen.bin"):
             print(line)
+        if args.moncmd:
+            print(mon.cmd(args.moncmd).strip())
         if args.regs:
             print(mon.cmd("info status").strip())
             print(mon.cmd("info registers"))

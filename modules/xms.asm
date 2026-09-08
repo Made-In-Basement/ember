@@ -24,10 +24,11 @@
 ; =============================================================================
 
 [BITS 16]
-[ORG 0x0000]
+%define MOD_ORG 0x0010
+[ORG MOD_ORG]
 %include "ember.inc"
 
-        MODULE_HEADER "XMS     ", xms_init, xms_unload, xms_event, 0, 0
+        MODULE_HEADER "XMS     ", xms_init, xms_unload, xms_event, 0
 
 XMS_HANDLES     equ 16                          ; more than any DOS program asks for
 XMS_MIN_POOL    equ 0x00200000                  ; do not bother below 2 MB
@@ -196,6 +197,8 @@ xms_entry:
         je      xms_f0e
         cmp     ah, 0x0F
         je      xms_f0f
+        cmp     ah, 0x80
+        je      xms_f80
         cmp     ah, 0x03                        ; A20 is on and stays on
         jb      .hma
         cmp     ah, 0x07
@@ -512,6 +515,20 @@ xms_f0f:
 .no_room:
         xor     ax, ax
         mov     bl, XMSERR_NOMEM
+        retf
+
+; ---- 80h: ours alone: where the pool begins ---------------------------------
+;   The extended memory below the pool, from the megabyte up, is nobody's
+;   while a DOS program runs: the kernel loads its 32-bit programs there,
+;   and none is resident then.  The DPMI host asks so it can use it.
+;   DX:BX = the pool's base, ECX = its size in KB, AX = 1.
+xms_f80:
+        mov     eax, [cs:xms_pool_base]
+        mov     bx, ax
+        shr     eax, 16
+        mov     dx, ax
+        mov     ecx, [cs:xms_pool_size]
+        mov     ax, 1
         retf
 
 ; =============================================================================

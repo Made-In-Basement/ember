@@ -21,7 +21,7 @@ SEL_KDATA32     equ 0x10                        ; 32-bit data, flat
 SEL_KCODE16     equ 0x18                        ; 16-bit code, base KBASE
 SEL_KDATA16     equ 0x20                        ; 16-bit data, base KBASE
 SEL_ACODE32     equ 0x28                        ; 32-bit code, flat (the app)
-NX_MIN_LOAD     equ 0x100000
+NX_MIN_LOAD     equ 0x110000                    ; the 64 KB below is the HMA
 NX_IDT_ENTRIES  equ 0x81                        ; exceptions, the IRQs and INT 80h
 NX_BOUNCE_PARAS equ 0x1000                      ; 64 KB real-mode bounce buffer
 

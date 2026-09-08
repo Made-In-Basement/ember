@@ -4,7 +4,7 @@
         .globl  nx_header
 nx_header:
         .ascii  "NX32"
-        .long   0x100000                /* load address */
+        .long   0x110000                /* load address */
         .long   _start                  /* entry */
         .long   __data_end              /* end of the file image */
         .long   __bss_end               /* end of bss */

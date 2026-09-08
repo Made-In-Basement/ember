@@ -74,11 +74,12 @@ drives the mouse, captures audio and takes screenshots.
   machine supports the traps, and `SPEAKER` on its own reports what a game
   did and what it cost.
 - Resident modules: the kernel fits in one 64 KB segment and that segment
-  is full, so a driver that stays resident lives in a segment of its own.
+  is full, so a driver that stays resident lives in the high memory area,
+  the 64 KB above the megabyte, where it costs DOS programs nothing.
   `LOAD name` reads `NAME.MOD` (from the current directory or the root)
-  into a block of memory that belongs to the system, calls its init, and
-  keeps it; `UNLOAD name` takes it out again, and `LOAD` alone lists what
-  is loaded. A module is a flat binary with a 32-byte header naming its
+  into its slot there (or into conventional memory if the slot cannot be
+  had), calls its init, and keeps it; `UNLOAD name` takes it out again,
+  and `LOAD` alone lists what is loaded. A module is a flat binary with a 32-byte header naming its
   init, unload and event entries; the kernel tells every module when the
   shell is back at its prompt and when a program starts or ends, and
   hands each a table of services (printing, memory, the log) to far-call.
@@ -89,6 +90,12 @@ drives the mouse, captures audio and takes screenshots.
   and copies made through the firmware's block move. `XMSTEST.COM`
   checks it the way a program would. `AUTOEXEC.BAT` loads it at boot;
   hold Shift to boot without it.
+- A DPMI host, `DPMI.MOD` (`LOAD DPMI`), for 32-bit clients: descriptors,
+  extended and DOS memory, real-mode calls and callbacks, exception
+  handlers, hooked hardware interrupts, all checked by `DPMITEST.COM`.
+  It is not loaded by default: a DOS extender that finds a host prefers
+  it to its own raw mode, and DOS/4GW does not get all the way through
+  yet. `docs/DPMI-STATUS.md` says exactly where it stops.
 - A two-panel file manager: `FM` gives two directory panels side by side.
   Tab switches, Enter opens a directory or runs a program, and the function
   keys copy (F5), rename or move (F6), make a directory (F7), delete (F8)
@@ -276,7 +283,8 @@ builds the music player, `--hello` a runtime self-test). `build.py` picks
 the results up from `root/`.
 
 Programs get about 522 KB of conventional memory, plus all extended memory
-for 32-bit programs, which see everything above 1 MB directly. The sound
+for 32-bit programs, which are loaded at 1 MB + 64 KB (the 64 KB below is
+the high memory area, where the modules live) and see everything above. The sound
 ring and the graphical shell's scratch are borrowed from that pool only
 while they are in use, so `SPEAKER ON` costs a program 64 KB and running
 something from inside the graphical shell costs it 48 KB. A game that
