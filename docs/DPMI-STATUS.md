@@ -84,6 +84,26 @@ descriptors are still readable after the client has left.)  `desc_new` now
 gives EAX and ECX back untouched, and `pm_first_entry` states the limit at
 every call rather than leaving one standing.
 
+Eight of the twelve checks then passed and the ninth stopped with
+
+    DPMI: unhandled exception 13 at 0007:00000554 error 00000000
+
+which is `DPMITEST`'s own fault, not the host's: its three handlers each
+noted their visit with a write through CS.  A code segment is never
+writable, whatever its R bit says, and QEMU does not enforce that either.
+They load DS from a read through CS instead - `push ds` / `mov ds,
+[cs:pm_ds]` / write / `pop ds` - which is what a handler should do anyway,
+since a tick or a callback can arrive with anything in DS.  The pair is
+balanced before the exception handler touches its frame, so `[esp+12]` still
+means what it did.  Nothing else in the tree writes through a code selector:
+`dpmi_pm.inc`, `dpmi_31.inc` and `src/pm32.asm` have no CS-relative access at
+all, and the other programs that do are real-mode only, where it is legal.
+
+The tick test's patience went from 4000000h to 40000000h at the same time.
+Four ticks is 220 ms and the old budget ran out at three often enough to
+fail a good host - and a real processor spins that loop faster than QEMU
+does, so it would have failed on the laptop as well.
+
 ## The exact symptom (DOS/4GW)
 
 After the banner, DOS/4GW's 32-bit loader (a 16-bit code segment at

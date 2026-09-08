@@ -337,7 +337,11 @@ pm_start:
         int     0x31
         jc      .irq_fail
         sti
-        mov     ecx, 0x04000000                 ; patience, then give up
+        ; Four ticks is 220 ms.  The old budget of 4000000h ran out at
+        ; three often enough to fail a good host, and a real processor
+        ; spins it faster than QEMU does, so it is generous now: a
+        ; host that never delivers a tick still gives up in seconds.
+        mov     ecx, 0x40000000                 ; patience, then give up
 .tick_wait:
         cmp     word [ticks], 4
         jae     .ticked
@@ -453,8 +457,16 @@ pm_start:
         int     0x21
 
 ; ---- the exception handler: skip the two-byte DIV, note the visit ----
+;   A handler arrives with whatever DS the interrupted code had, so it loads
+;   its own from a read through CS.  It may not *write* through CS: a code
+;   segment is never writable, whatever its R bit says, and the host has no
+;   reason to hand out an alias.  The push and pop are balanced before the
+;   frame is touched, so the offsets below stay as they are.
 exc_handler:
-        mov     byte [cs:exc_hit], 1
+        push    ds
+        mov     ds, [cs:pm_ds]
+        mov     byte [exc_hit], 1
+        pop     ds
         mov     eax, [esp+12]                   ; EIP in the frame
         add     eax, 2
         mov     [esp+12], eax
@@ -462,12 +474,18 @@ exc_handler:
 
 ; ---- the timer handler: count, then the previous handler ----
 timer_handler:
-        inc     word [cs:ticks]
+        push    ds
+        mov     ds, [cs:pm_ds]
+        inc     word [ticks]
+        pop     ds
         jmp     far dword [cs:old8]
 
 ; ---- the callback's procedure: pop the return address, go back ----
 cb_proc:
-        mov     byte [cs:cb_hit], 1
+        push    ds
+        mov     ds, [cs:pm_ds]                  ; DS arrives as the structure's
+        mov     byte [cb_hit], 1                ;  selector: put it back
+        pop     ds
         mov     ax, [es:edi]                    ; IP on the real-mode stack
         mov     [esi+42], ax
         mov     ax, [es:edi+2]                  ; CS
