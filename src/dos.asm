@@ -161,20 +161,10 @@ int29_handler:
         pop     ax
         iret
 
-; INT 2Fh: multiplex.  Only the "is X installed?" probes get an answer
+; INT 2Fh: multiplex.  Only the "is X installed?" probes get an answer.
+;   Drivers that are modules (XMS.MOD) hook this vector ahead of us and
+;   answer for themselves.
 int2f_handler:
-        cmp     ax, 0x4300                      ; is there an XMS driver?
-        jne     .not_xms_check
-        mov     al, 0x80                        ; there is
-        iret
-.not_xms_check:
-        cmp     ax, 0x4310                      ; where do I call it?
-        jne     .not_xms_entry
-        push    cs
-        pop     es
-        mov     bx, xms_entry
-        iret
-.not_xms_entry:
         cmp     ax, 0x1687                      ; DPMI installation check
         jne     .not_dpmi
         ; Only a program about to enter protected mode asks this.  Once it is
@@ -208,6 +198,7 @@ int20_handler:
 ; INT 21h dispatcher
 ; =============================================================================
 STK_FRAME       equ 0x2000 - 48                 ; top 48 bytes of the block
+STK_IVT         equ 0                           ; bottom 1 KB: the saved vectors
 
 int21_handler:
         push    ds
@@ -2447,6 +2438,8 @@ program_return:
         mov     word [cur_psp], 0
         mov     byte [proc_depth], 0
         call    mem_free_programs               ; nothing can leak past this point
+        mov     al, MOD_EV_END                  ; the modules may want to know
+        call    mod_event
         xor     ax, ax
         call    handles_close_owner             ; (owner 0: handles opened by
         call    ivt_restore                     ;  a program with a switched PSP)
@@ -2505,12 +2498,11 @@ ivt_save:
         pusha
         push    ds
         push    es
-        mov     ax, cs
-        mov     es, ax
+        mov     es, [stk_seg]
         xor     ax, ax
         mov     ds, ax
         xor     si, si
-        mov     di, ivt_copy
+        mov     di, STK_IVT
         mov     cx, 512
         cli
         rep     movsw
@@ -2522,16 +2514,19 @@ ivt_save:
 
 ivt_restore:
         pusha
+        push    ds
         push    es
         xor     ax, ax
         mov     es, ax
-        mov     si, ivt_copy
+        mov     ds, [stk_seg]
+        mov     si, STK_IVT
         xor     di, di
         mov     cx, 512
         cli
         rep     movsw
         sti
         pop     es
+        pop     ds
         popa
         ret
 
@@ -2562,8 +2557,16 @@ run_program_file:
         mov     [exec_tail_len], cl
         pop     si
         mov     byte [exec_type], 0
+        mov     al, MOD_EV_START                ; the modules may want to know
+        call    mod_event
         call    exec_program                    ; CF=1 if it could not start
-        ret
+        jnc     .ran
+        push    ax
+        mov     al, MOD_EV_END                  ; nothing ran after all
+        call    mod_event
+        pop     ax
+        stc
+.ran:   ret
 
 ; =============================================================================
 ; RTC helpers
@@ -2739,7 +2742,6 @@ exec_tail:      resb 128
 exec_full:      resb 96
 exe_hdr:        resb 32
 ff_pattern:     resb 12
-ivt_copy:       resb 1024
 caller_ss:      resw 1
 caller_sp:      resw 1
 nx_ret_ss:      resw 1                          ; the parent's INT 21h frame

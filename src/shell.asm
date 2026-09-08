@@ -20,7 +20,8 @@ shell_main:
         call    run_batch_lines
         jmp     .loop
 .prompt:
-        call    xms_reset                       ; nothing is running: take it all back
+        mov     al, MOD_EV_PROMPT               ; nothing is running: modules may
+        call    mod_event                       ;  take back what programs left
         call    spk_bridge_resume               ; and the speaker, if it was wanted
         call    print_prompt
         mov     di, cmdline
@@ -1421,6 +1422,10 @@ command_table:
         dw cmd_sound
         db "TRACE", 0
         dw cmd_trace
+        db "LOAD", 0
+        dw cmd_load
+        db "UNLOAD", 0
+        dw cmd_unload
         db 0
 
 ; =============================================================================
@@ -1892,6 +1897,7 @@ msg_help:
         db "  SHUTDOWN        Power off (APM)     HELP            This text", 13, 10
         db "  PLAY file.wav   Play a WAV file     PLAY C E G > C  Notes on the speaker", 13, 10
         db "  SOUND           Sound chip status   SOUND DEBUG     Trace the sound probe", 13, 10
+        db "  LOAD [name]     Load a module       UNLOAD name     Remove it again", 13, 10
         db "  <name>          Run a .COM program or .BAT batch file", 13, 10, 13, 10, 0
 
 section .bss

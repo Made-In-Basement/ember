@@ -1,15 +1,18 @@
 ; =============================================================================
-;  xms.asm - extended memory for DOS programs (XMS 3.0, the useful parts)
+;  XMS.MOD - extended memory for DOS programs (XMS 3.0, the useful parts)
 ; -----------------------------------------------------------------------------
 ;  A DOS program that wants memory above the first megabyte asks for it the
 ;  way HIMEM.SYS taught it to: INT 2Fh AX=4300h to see whether anyone is
 ;  listening, AX=4310h for an address to call, and then far calls with the
-;  function in AH.  This provides that.
+;  function in AH.  This provides that.  It is a resident module (LOAD XMS):
+;  it hooks INT 2Fh ahead of the kernel and answers those two questions.
 ;
 ;  The pool is the upper half of extended memory, so it cannot collide with
 ;  the 32-bit programs the kernel loads at the one megabyte mark.  Blocks
 ;  are handed out from a small table of handles, first fit, and coalesced
-;  when freed.
+;  when freed.  Nothing owns extended memory between commands, so the pool is
+;  made one free block again every time the shell reaches its prompt: a
+;  program that ends without giving its blocks back does not keep them.
 ;
 ;  Copying between conventional and extended memory goes through the
 ;  firmware's own block move (INT 15h AH=87h), which works from real mode
@@ -20,8 +23,118 @@
 ;  memory blocks.  Both are refused politely, which is a legal answer.
 ; =============================================================================
 
+[BITS 16]
+[ORG 0x0000]
+%include "ember.inc"
+
+        MODULE_HEADER "XMS     ", xms_init, xms_unload, xms_event, 0, 0
+
 XMS_HANDLES     equ 16                          ; more than any DOS program asks for
 XMS_MIN_POOL    equ 0x00200000                  ; do not bother below 2 MB
+
+; =============================================================================
+; xms_init: work out the pool, hook INT 2Fh, say what there is
+; =============================================================================
+xms_init:
+        SVC_TABLE_COPY
+        ; ---- how much memory is there? ----
+        SVC     SVC_EXT_MEM_END                 ; EAX = end of usable memory
+        cmp     eax, XMS_MIN_POOL
+        jbe     .none
+        ; the upper half, aligned down to a megabyte
+        mov     ebx, eax
+        shr     ebx, 1
+        and     ebx, 0xFFF00000
+        cmp     ebx, 0x00100000
+        jae     .base_ok
+        mov     ebx, 0x00100000
+.base_ok:
+        cmp     ebx, eax
+        jae     .none
+        mov     [xms_pool_base], ebx
+        sub     eax, ebx
+        shr     eax, 10                         ; kilobytes
+        mov     [xms_pool_size], eax
+        call    xms_reset
+        ; ---- INT 2Fh: ours first, the old one behind ----
+        push    es
+        xor     ax, ax
+        mov     es, ax
+        cli
+        mov     eax, [es:0x2F*4]
+        mov     [old_int2f], eax
+        mov     word [es:0x2F*4], int2f_hook
+        mov     [es:0x2F*4+2], cs
+        sti
+        pop     es
+        ; ---- say so ----
+        mov     si, msg_loaded
+        SVC     SVC_PUTS
+        mov     eax, [xms_pool_size]
+        SVC     SVC_PRINT_DEC
+        mov     si, msg_loaded2
+        SVC     SVC_PUTS
+        mov     si, msg_log
+        mov     eax, [xms_pool_base]
+        SVC     SVC_LOG_LINE
+        clc
+        retf
+.none:  mov     si, msg_none
+        SVC     SVC_PUTS
+        stc
+        retf
+
+; =============================================================================
+; xms_unload: give INT 2Fh back, unless someone has hooked it after us
+; =============================================================================
+xms_unload:
+        push    es
+        xor     ax, ax
+        mov     es, ax
+        cmp     word [es:0x2F*4], int2f_hook
+        jne     .busy
+        mov     ax, cs
+        cmp     [es:0x2F*4+2], ax
+        jne     .busy
+        cli
+        mov     eax, [old_int2f]
+        mov     [es:0x2F*4], eax
+        sti
+        pop     es
+        clc
+        retf
+.busy:  pop     es
+        mov     si, msg_hooked
+        SVC     SVC_PUTS
+        stc
+        retf
+
+; =============================================================================
+; xms_event: at the prompt, nothing owns extended memory: take it all back
+; =============================================================================
+xms_event:
+        cmp     al, MOD_EV_PROMPT
+        jne     .done
+        call    xms_reset
+.done:  retf
+
+; =============================================================================
+; int2f_hook: the two questions HIMEM answers; everything else goes on
+; =============================================================================
+int2f_hook:
+        cmp     ax, 0x4300                      ; is there an XMS driver?
+        jne     .not_check
+        mov     al, 0x80                        ; there is
+        iret
+.not_check:
+        cmp     ax, 0x4310                      ; where do I call it?
+        jne     .not_entry
+        push    cs
+        pop     es
+        mov     bx, xms_entry
+        iret
+.not_entry:
+        jmp     far [cs:old_int2f]
 
 ; ---- error codes, as the specification names them ----
 XMSERR_HMA      equ 0x90                        ; the HMA does not exist
@@ -38,53 +151,7 @@ XMSERR_NOTLOCK  equ 0xAA                        ; it is not locked
 XMSERR_NOUMB    equ 0xB1                        ; no upper memory blocks
 
 ; =============================================================================
-; xms_init: work out the pool and make one free block of it
-; =============================================================================
-xms_init:
-        pusha
-        push    es
-        push    ds
-        push    cs
-        pop     es
-        ; ---- clear the table ----
-        mov     di, xms_handle
-        mov     cx, XMS_HANDLES * XMS_HANDLE_SZ
-        xor     al, al
-        cld
-        rep     stosb
-        mov     dword [xms_pool_base], 0
-        mov     dword [xms_pool_size], 0
-        ; ---- how much memory is there? ----
-        call    ext_mem_end                     ; EAX = end of usable memory
-        cmp     eax, XMS_MIN_POOL
-        jbe     .done
-        ; the upper half, aligned down to a megabyte
-        mov     ebx, eax
-        shr     ebx, 1
-        and     ebx, 0xFFF00000
-        cmp     ebx, 0x00100000
-        jae     .base_ok
-        mov     ebx, 0x00100000
-.base_ok:
-        cmp     ebx, eax
-        jae     .done
-        mov     [xms_pool_base], ebx
-        sub     eax, ebx
-        shr     eax, 10                         ; kilobytes
-        mov     [xms_pool_size], eax
-.done:
-        pop     ds
-        pop     es
-        popa
-        ; fall through: the table starts as one free block of the whole pool
-
-; =============================================================================
-; xms_reset: forget every handle and make the pool one free block again.
-;
-;  Nothing here owns memory between commands: a program that ends without
-;  giving its blocks back would otherwise leave them held for good, and the
-;  next program to ask would be told there is none.  The shell calls this
-;  when it has the machine to itself.
+; xms_reset: forget every handle and make the pool one free block again
 ; =============================================================================
 xms_reset:
         pusha
@@ -96,15 +163,14 @@ xms_reset:
         xor     al, al
         cld
         rep     stosb
-        cmp     dword [xms_pool_size], 0
+        cmp     dword [cs:xms_pool_size], 0
         je      .none
-        mov     eax, [xms_pool_base]
-        mov     [xms_handle + XMS_H_BASE], eax
-        mov     eax, [xms_pool_size]
-        mov     [xms_handle + XMS_H_SIZE], eax
-        mov     byte [xms_handle + XMS_H_STATE], 1      ; 1 = free block
-.none:
-        pop     es
+        mov     eax, [cs:xms_pool_base]
+        mov     [cs:xms_handle + XMS_H_BASE], eax
+        mov     eax, [cs:xms_pool_size]
+        mov     [cs:xms_handle + XMS_H_SIZE], eax
+        mov     byte [cs:xms_handle + XMS_H_STATE], 1   ; 1 = free block
+.none:  pop     es
         popa
         ret
 
@@ -617,4 +683,11 @@ xms_mv_len:     dd 0
 xms_mv_src:     dd 0
 xms_mv_dst:     dd 0
 xms_gdt:        times 8 * 8 db 0
+old_int2f:      dd 0                            ; the vector we chained to
+svc_table:      times SVC_MAX * 4 db 0          ; the kernel's services, copied
+msg_loaded:     db "XMS: ", 0
+msg_loaded2:    db " KB of extended memory", 13, 10, 0
+msg_none:       db "XMS: no extended memory to manage", 13, 10, 0
+msg_hooked:     db "XMS: INT 2Fh has been hooked by something else", 13, 10, 0
+msg_log:        db "XMS pool base           ", 0
 section .text

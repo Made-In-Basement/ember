@@ -1,5 +1,6 @@
 @ECHO OFF
 ECHO Ember starting...
+LOAD XMS
 SPLASH SPLASH.BIN CHIMES.WAV
 REM WIN
 REM SPEAKER ON is NOT run here on purpose: it takes over the clock

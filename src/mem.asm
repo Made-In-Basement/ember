@@ -8,7 +8,8 @@
 ;     pcm_seg   64 KB  HD Audio PCM ring buffer   (borrowed on demand)
 ;     gui_seg   48 KB  GUI scratch                 (borrowed on demand)
 ;     hda_seg    4 KB  CORB / RIRB / BDL
-;     stk_seg    8 KB  the INT 21h stack, its register frame at the top
+;     stk_seg    8 KB  the INT 21h stack, its register frame at the top,
+;                     the saved interrupt vectors in its bottom 1 KB
 ;     log_seg    8 KB  boot log
 ;     top       EBDA / end of conventional memory
 ;

@@ -73,6 +73,22 @@ drives the mouse, captures audio and takes screenshots.
   automatically: type it when you want it. `IOBPTEST` reports whether a
   machine supports the traps, and `SPEAKER` on its own reports what a game
   did and what it cost.
+- Resident modules: the kernel fits in one 64 KB segment and that segment
+  is full, so a driver that stays resident lives in a segment of its own.
+  `LOAD name` reads `NAME.MOD` (from the current directory or the root)
+  into a block of memory that belongs to the system, calls its init, and
+  keeps it; `UNLOAD name` takes it out again, and `LOAD` alone lists what
+  is loaded. A module is a flat binary with a 32-byte header naming its
+  init, unload and event entries; the kernel tells every module when the
+  shell is back at its prompt and when a program starts or ends, and
+  hands each a table of services (printing, memory, the log) to far-call.
+  The format is in `modules/ember.inc`. The first module is `XMS.MOD`
+  (`modules/xms.asm`): extended memory for DOS programs, XMS 3.0 as
+  HIMEM.SYS answers it, with the pool taken from the upper half of
+  extended memory so it never meets the 32-bit programs loaded at 1 MB,
+  and copies made through the firmware's block move. `XMSTEST.COM`
+  checks it the way a program would. `AUTOEXEC.BAT` loads it at boot;
+  hold Shift to boot without it.
 - A two-panel file manager: `FM` gives two directory panels side by side.
   Tab switches, Enter opens a directory or runs a program, and the function
   keys copy (F5), rename or move (F6), make a directory (F7), delete (F8)
@@ -211,9 +227,10 @@ Most real-mode DOS software runs: `.COM` files, `MZ` executables with
 relocations, text mode and VGA graphics, command-line arguments, and
 programs that launch other programs. Doom's own `SETUP.EXE` and the
 `DOOM.EXE` bound with the DOS/4GW extender both work. What is missing is
-mostly about memory: there is no EMS, no XMS and no DPMI host, so
-DJGPP-built programs and anything that asks for a DOS extender of its own
-will refuse to start. There is no Sound Blaster, no mouse driver interface
+mostly about memory: there is no EMS and no DPMI host, so DJGPP-built
+programs and anything that asks for a DOS extender of its own will refuse
+to start. Extended memory is there once `LOAD XMS` has run (which
+`AUTOEXEC.BAT` does), the way HIMEM.SYS provides it. There is no Sound Blaster, no mouse driver interface
 and no networking, but a game that makes sound the 1980s way, through the
 PC speaker, is audible: see `SPEAKER` above. That bridge owns the
 real-time clock interrupt and the debug registers while it runs, so hand
@@ -375,8 +392,9 @@ boots a floppy image. `--shift` holds Shift during boot to skip
   costs at most the file being written.
 - Writing is exercised on FAT16, the format the USB image uses. The FAT12
   side of the driver is written but has not been tested on hardware.
-- One program at a time (plus what it EXECs); no TSRs, no XMS/EMS/DPMI
-  host of its own (extenders such as DOS/4GW bring their own).
+- One program at a time (plus what it EXECs); no TSRs (drivers that stay
+  resident are modules, see Features), no EMS, no DPMI host of its own
+  (extenders such as DOS/4GW bring their own).
 - Everything goes through the BIOS: no protected mode, no real drivers.
   That is what makes it boot on almost anything with a CSM.
 - Long file names are ignored (8.3 names only, as in DOS).
@@ -389,6 +407,7 @@ boots a floppy image. `--shift` holds Shift during boot to skip
 build.py            assembles everything, builds the images (--run boots QEMU)
 src/                the operating system
 programs/           .COM demo programs (assembled into the image root)
+modules/            resident modules (XMS.MOD), assembled into the image root
 root/               files copied into the image (README.TXT, AUTOEXEC.BAT, DOCS\)
 tools/nasm/         NASM 3.02 for Windows (official build)
 tools/qemu_test.py  headless QEMU test harness

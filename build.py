@@ -26,6 +26,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 SRC = ROOT / "src"
 PROGRAMS = ROOT / "programs"
+MODULES = ROOT / "modules"
 FILES = ROOT / "root"
 BUILD = ROOT / "build"
 SECTOR = 512
@@ -451,6 +452,10 @@ def main():
         stem = src.stem.upper()
         out = BUILD / (stem[:-4] + ".EXE" if stem.endswith("_EXE") else stem + ".COM")
         programs.append((out.name, assemble(nasm_exe, src, out)))
+    for src in sorted(MODULES.glob("*.asm")):
+        # resident modules: foo.asm -> FOO.MOD, loaded with LOAD FOO
+        out = BUILD / (src.stem.upper() + ".MOD")
+        programs.append((out.name, assemble(nasm_exe, src, out, MODULES)))
 
     kernel_sectors = (len(kernel) + SECTOR - 1) // SECTOR
     check_kernel_layout(kernel)

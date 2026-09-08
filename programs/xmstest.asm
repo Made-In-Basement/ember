@@ -36,7 +36,7 @@ start:
         pop     es                              ; and the string moves below need ours
         mov     si, msg_entry
         call    puts
-        mov     ax, es
+        mov     ax, [entry+2]
         call    put_hex16
         mov     al, ':'
         call    putc
