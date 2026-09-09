@@ -204,12 +204,17 @@ def main():
     ap.add_argument("--logmask", default="", help="switch QEMU's log to this mask (e.g. exec,int) after the keys")
     ap.add_argument("--logmask-delay", type=float, default=0.3,
                     help="seconds after the keys before --logmask takes effect")
+    ap.add_argument("--cpu", help="QEMU CPU model (e.g. max, qemu64,+vme). The "
+                    "default model has no virtual-8086 extensions, which SB.MOD "
+                    "needs; the laptop's Broadwell has them.")
     args = ap.parse_args()
 
     qemu = find_qemu()
     img = str(Path(args.img).resolve())
     cmd = [qemu, "-m", str(args.mem), "-display", "none", "-rtc", "base=localtime",
            "-monitor", f"tcp:127.0.0.1:{args.port},server,nowait"]
+    if args.cpu:
+        cmd += ["-cpu", args.cpu]
     if args.regs:
         cmd += ["-no-reboot", "-no-shutdown"]
     if args.qemulog:

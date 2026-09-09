@@ -1924,6 +1924,8 @@ exec_program:
         mov     ax, [dta_off]
         mov     [nx_ret_dta_off], ax
         call    ivt_save                        ; restored on the way out
+        mov     al, MOD_EV_NATIVE               ; a module that put the machine
+        call    mod_event                       ;  somewhere else puts it back
         call    spk_bridge_stop                 ; its breakpoints would fire in
         call    run_nx32                        ;  protected mode; back after
         ret

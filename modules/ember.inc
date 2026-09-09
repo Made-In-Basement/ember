@@ -6,8 +6,8 @@
 ;  each module owns a slot there, defines MOD_ORG as that offset before
 ;  including this file, and is assembled with ORG MOD_ORG.  The slots:
 ;     0010h  XMS      to 0FFFh
-;     1000h  DPMI     to 8FFFh
-;     9000h  free
+;     1000h  DPMI     to 9FFFh
+;     A000h  SB       to FFEFh
 ;  When the slot cannot be had the kernel loads the module into a block
 ;  of conventional memory at that same offset, so nothing changes for it.
 ;  It starts with the 32-byte header MODULE_HEADER lays out, and is
@@ -26,6 +26,10 @@
 MOD_EV_PROMPT   equ 0                           ; the shell is at its prompt
 MOD_EV_START    equ 1                           ; a program is about to run
 MOD_EV_END      equ 2                           ; the program has ended
+MOD_EV_NATIVE   equ 3                           ; ...and it was a 32-bit one of
+                                                ;  ours, which runs the
+                                                ;  processor itself: stand down
+                                                ;  before it starts
 
 ; ---- services, by number ----
 SVC_PUTS        equ 0                           ; DS:SI NUL-terminated string

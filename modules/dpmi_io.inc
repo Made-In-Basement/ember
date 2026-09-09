@@ -23,6 +23,8 @@
 IO_ADLIB        equ 0x388               ; the synthesiser, and 0x389 beside it
 IO_SB_BASE      equ 0x220               ; the card: 220h through 22Fh
 IO_SB_TOP       equ 0x22F
+IO_ESCAPE       equ 0x2FF               ; not a port: how sb.asm leaves V86
+IO_PIC          equ 0x20                ; the interrupt controller, and its mask
 
 [BITS 16]
 ; -----------------------------------------------------------------------------
@@ -65,20 +67,67 @@ io_trap_setup:
         ; does, and a game programs that instead.  Watching the card without
         ; watching this would be watching somebody dial a telephone and
         ; never hearing the call.
-        xor     dx, dx
-.dma:   call    io_trap_port                    ; 00h-0Fh: the four channels
-        inc     dx
-        cmp     dx, 0x0F
-        jbe     .dma
-        mov     cx, 3
-        mov     dx, 0x81                        ; 81h-83h, and 87h below
-.page:  call    io_trap_port
-        inc     dx
-        loop    .page
-        mov     dx, 0x87
+        ;
+        ; Only channel 1's own registers, though - its address, its count and
+        ; the page above them - because the other three channels belong to
+        ; whatever else is in the machine, and a floppy that cannot reach
+        ; memory is a poor trade for a sound card.  The three registers every
+        ; channel shares are watched and then let through to the real
+        ; controller, so the shadow here and the hardware agree.
+        mov     dx, 0x02                        ; channel 1: the address
+        call    io_trap_port
+        inc     dx                              ; and how many bytes
+        call    io_trap_port
+        mov     dx, 0x0A                        ; the mask
+        call    io_trap_port
+        inc     dx                              ; the mode
+        call    io_trap_port
+        inc     dx                              ; and the flip-flop's reset
+        call    io_trap_port
+        mov     dx, 0x83                        ; channel 1's page
+        call    io_trap_port
+        mov     dx, IO_ESCAPE
         call    io_trap_port
         pop     dx
         pop     cx
+        ret
+
+; -----------------------------------------------------------------------------
+; io_trap_pic: the interrupt controller as well.  Only the V86 monitor asks
+;   for this: it needs the card's own interrupt to look real, which means
+;   knowing what the program has unmasked and swallowing the end-of-interrupt
+;   the program sends for an interrupt no chip ever raised.
+; -----------------------------------------------------------------------------
+io_trap_pic:
+        push    dx
+        mov     dx, IO_PIC
+        call    io_trap_port
+        inc     dx
+        call    io_trap_port
+        pop     dx
+        ret
+
+; -----------------------------------------------------------------------------
+; io_card_reset: forget the last program's card.  Counters and all: each run
+;   reports its own.
+; -----------------------------------------------------------------------------
+io_card_reset:
+        push    ax
+        push    cx
+        push    di
+        push    es
+        push    cs
+        pop     es
+        mov     di, io_state
+        mov     cx, (io_state_end - io_state) / 2
+        xor     ax, ax
+        rep     stosw
+        mov     byte [opl_timer_flags], 0xC0
+        mov     byte [pic_mask], 0xFF
+        pop     es
+        pop     di
+        pop     cx
+        pop     ax
         ret
 
 [BITS 32]
@@ -104,6 +153,12 @@ io_dev_out:
         je      .fm_addr2               ; and the second bank
         cmp     dx, 0x223
         je      .fm_data2
+        cmp     dx, IO_ESCAPE
+        je      .escape
+        cmp     dx, 0x20
+        je      .pic_cmd
+        cmp     dx, 0x21
+        je      .pic_mask
         cmp     dx, 0x226
         je      .dsp_reset
         cmp     dx, 0x22C
@@ -118,7 +173,47 @@ io_dev_out:
         je      .dma_page
         cmp     dx, 0x87
         je      .dma_page
+        cmp     dx, 0x400
+        jae     .passthru               ; not in the map at all: the machine's
         jmp     .done                   ; the mixer and the rest: swallowed
+; The permission map only reaches port 3FFh; everything above it faults
+; whether this host wants it or not, so what a program meant by it is done
+; for real.  Ring 0 may touch any port, map or no map.
+.passthru:
+        cmp     cl, 1
+        je      .pass1
+        cmp     cl, 2
+        je      .pass2
+        out     dx, eax
+        jmp     .done
+.pass1: out     dx, al
+        jmp     .done
+.pass2: out     dx, ax
+        jmp     .done
+; ---- not a port at all: the monitor's way of asking to leave V86 mode -------
+.escape:
+        mov     byte [io_leave], 1
+        jmp     .done
+; ---- the interrupt controller ----------------------------------------------
+; The card's interrupt is one this host raises itself, so the controller never
+; has it in service and the end-of-interrupt a program sends for it would
+; clear whatever really is - the timer, most likely, in whose handler the
+; card's own is nested.  So that one is swallowed and the rest let through.
+.pic_cmd:
+        cmp     byte [pic_isr], 0
+        je      .pic_through
+        mov     byte [pic_isr], 0
+        jmp     .done
+.pic_through:
+        out     0x20, al
+        jmp     .done
+; A program that unmasks the card's line unmasks nothing: no chip is on it.
+; What it wanted is remembered, so this host knows whether to raise anything.
+.pic_mask:
+        mov     [pic_mask], al
+        or      al, 0x20                ; line 5 stays masked in the hardware
+        out     0x21, al
+        jmp     .done
 .fm_addr:
         mov     [opl_index], al
         mov     byte [opl_bank], 0
@@ -292,16 +387,22 @@ io_dev_out:
         cmp     bl, 0x0A                        ; mask one channel
         je      .dma_mask
         jmp     .done
+        ; All three belong to every channel at once, so the write is noted
+        ; and then made for real: the other three channels are somebody
+        ; else's and must go on working.
 .dma_clear:
         mov     byte [dma_ff], 0
+        out     0x0C, al
         jmp     .done
 .dma_mode:
         movzx   ebx, al
         and     ebx, 3
         mov     [dma_mode + ebx], al
+        out     0x0B, al
         jmp     .done
 .dma_mask:
         mov     [dma_mask], al
+        out     0x0A, al
         jmp     .done
 ; The page registers are not in channel order, because nothing about this
 ; controller is: 87h is channel 0, 83h channel 1, 81h channel 2, 82h three.
@@ -334,6 +435,10 @@ io_dev_in:
         push    ebx
         inc     dword [io_reads]
         xor     eax, eax
+        cmp     dx, 0x21
+        je      .pic_mask               ; what the program last asked for
+        cmp     dx, 0x20
+        je      .pic_read               ; whatever the real one says
         cmp     dx, 0x388
         je      .fm_status
         cmp     dx, 0x220
@@ -343,10 +448,42 @@ io_dev_in:
         cmp     dx, 0x22C
         je      .dsp_write_status
         cmp     dx, 0x22E
-        je      .dsp_read_status
+        je      .dsp_ack
+        cmp     dx, 0x400
+        jae     .passthru               ; above the map: really read it
         mov     eax, 0xFF               ; an unclaimed port reads as nothing
         pop     ebx
         ret
+.passthru:
+        cmp     cl, 1
+        je      .pass1
+        cmp     cl, 2
+        je      .pass2
+        in      eax, dx
+        pop     ebx
+        ret
+.pass1: in      al, dx
+        movzx   eax, al
+        pop     ebx
+        ret
+.pass2: in      ax, dx
+        movzx   eax, ax
+        pop     ebx
+        ret
+; A program that means to unmask its own line reads the mask, clears a bit and
+; writes it back.  Answering that read with nothing would tell it every line
+; is masked, and it would then mask every line - including the timer, and the
+; keyboard, and itself.
+.pic_mask:
+        movzx   eax, byte [pic_mask]
+        pop     ebx
+        ret
+.pic_read:
+        in      al, 0x20
+        movzx   eax, al
+        pop     ebx
+        ret
+
 ; The synthesiser's status: the timers, which a program uses to decide the
 ; chip is really there.  Both bits set once a timer has been started and
 ; expired, which as far as anyone outside can tell is immediately.
@@ -386,7 +523,10 @@ io_dev_in:
         xor     eax, eax
         pop     ebx
         ret
-.dsp_read_status:                       ; bit 7 set: there is something to read
+; Reading this is how a program's interrupt handler tells the card it has
+; been heard, as well as how it asks whether there is anything to read.
+.dsp_ack:
+        mov     byte [sb_card_irq], 0
         mov     al, [dsp_has_reply]
         or      al, al
         jz      .nothing
@@ -492,10 +632,13 @@ io_pump:
         cmp     byte [sb_auto], 0
         jne     .rewind
         mov     byte [sb_playing], 0            ; one pass, and it is over
+        inc     dword [sb_blocks]
+        mov     byte [sb_irq_owed], 1
         jmp     .done
 .rewind:
         mov     dword [au_spos], 0
         inc     dword [sb_blocks]
+        mov     byte [sb_irq_owed], 1
         xor     eax, eax
 .have_sample:
         add     eax, [au_src]
@@ -666,6 +809,9 @@ msg_io_tc:      db "SB: the time constant        ", 0
 msg_io_auto:    db "SB: keeps playing by itself  ", 0
 
 ; ---- what the card remembers ------------------------------------------------
+; Everything from here to io_state_end is cleared between programs, so each
+; run of a game meets a card that has just been switched on.
+io_state:
 io_writes:      dd 0                    ; counted so a test can see them arrive
 io_reads:       dd 0
 opl_writes:     dd 0
@@ -713,5 +859,11 @@ au_calls:       dd 0                    ; times the pump was asked to run
 au_ready:       dd 0                    ; times it had a stream to fill
 au_frames:      dd 0                    ; frames it laid down
 au_primed:      db 0                    ; the write position has been placed
+sb_irq_owed:    db 0                    ; a block is done; the card would say so
+sb_card_irq:    db 0                    ; ...and has not been acknowledged yet
+pic_isr:        db 0                    ; the card's interrupt is being served
+pic_mask:       db 0xFF                 ; what the program asked the controller
+io_leave:       db 0                    ; the monitor has been asked to stand down
                 align 4
 opl_regs:       times 512 db 0
+io_state_end:

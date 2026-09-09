@@ -30,7 +30,9 @@
 ;     init    ES:SI = the rest of the command line.  CF=1 refuses the load.
 ;     unload  CF=1 refuses (a vector of its is hooked by someone else, say).
 ;     event   AL = MOD_EV_PROMPT when the shell has the machine to itself,
-;             MOD_EV_START just before a program runs, MOD_EV_END after it.
+;             MOD_EV_START just before a program runs, MOD_EV_END after it,
+;             MOD_EV_NATIVE when the program turns out to be a 32-bit one of
+;             ours and will be running the processor itself.
 ;
 ;  What a module gets from the kernel is the service table: a count and then
 ;  far pointers, one per service, numbered in ember.inc.  A module copies the
@@ -55,6 +57,7 @@ HMA_SEG         equ 0xFFFF
 MOD_EV_PROMPT   equ 0
 MOD_EV_START    equ 1
 MOD_EV_END      equ 2
+MOD_EV_NATIVE   equ 3
 
 ; -----------------------------------------------------------------------------
 ; cmd_load: LOAD [name [arguments]].  Alone, it lists what is loaded.
