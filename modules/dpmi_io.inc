@@ -757,7 +757,13 @@ io_dev_in:
 ;  allowed to be.
 ; =============================================================================
 [BITS 32]
-AU_LEAD         equ 8192                        ; frames kept ahead of the DMA
+; How far ahead of the hardware to fill.  Every frame of that is a frame of
+; music rendered before the game has said what should be in it, so the lead
+; wants to be as short as the pump's clock allows: a couple of its intervals
+; and no more.  au_lead is set when the monitor knows what clock it has.
+AU_LEAD_SLOW    equ 8192                        ; on the timer alone: 186 ms
+AU_LEAD_FAST    equ 1536                        ; on the real-time chip: 35 ms
+AU_LEAD_STEP    equ 1024                        ; what falling behind costs
 
 io_pump:
         inc     dword [au_calls]
@@ -815,11 +821,41 @@ io_pump:
         xor     edx, edx
         div     ecx
         mov     eax, edx                        ; frames in hand
-        cmp     eax, AU_LEAD
-        jae     .done                           ; enough for now
-        mov     edi, AU_LEAD
-        sub     eax, eax
-        mov     eax, AU_LEAD
+        cmp     eax, [au_lead]
+        jb      .short                          ; not enough: fill it up
+        ; In a ring, so many frames ahead and the same number behind are the
+        ; one number.  More in hand than was ever asked for is therefore not
+        ; a lead at all - it is the hardware having overtaken us and the
+        ; difference having wrapped.  Read that as a lead and the pump would
+        ; decide it had plenty, fill nothing, and never catch up again: the
+        ; ring would play the same stale second round and round, which is
+        ; what a tune rendered into it sounds like when it goes wrong.
+        mov     edx, [au_lead]
+        add     edx, edx
+        cmp     eax, edx
+        jb      .done                           ; genuinely ahead
+        mov     eax, ebx                        ; behind: start again, just
+        add     eax, 256                        ;  in front of the hardware
+        xor     edx, edx
+        div     ecx
+        mov     [au_wpos], edx
+        inc     dword [au_late]
+        ; Falling behind is a click, and a lead too short to be kept is a
+        ; click every time round.  So the lead is not a constant: it starts
+        ; at what the clock should allow and grows whenever the machine
+        ; turns out not to manage it.  A fast machine keeps a short lead and
+        ; music made close to the moment it is heard; a slow one settles at
+        ; whatever it can hold without breaking up.
+        mov     eax, [au_lead]
+        add     eax, AU_LEAD_STEP
+        cmp     eax, AU_LEAD_SLOW
+        jbe     .lead_ok
+        mov     eax, AU_LEAD_SLOW
+.lead_ok:
+        mov     [au_lead], eax
+        xor     edx, edx                        ; and nothing in hand
+.short:
+        mov     eax, [au_lead]
         sub     eax, edx
         mov     edi, eax                        ; frames to lay down
         add     [au_frames], edi
@@ -1000,7 +1036,20 @@ io_report:
         jne     .say
         cmp     dword [io_reads], 0
         je      .none
-.say:   mov     si, msg_io_w
+; Text mode first, if the program left the screen somewhere else.  The shell
+; puts the screen back a moment after this and takes anything written to a
+; graphics screen with it, so a report written there is a report nobody
+; reads - and after a game, a graphics screen is the usual case.
+.say:   push    ax
+        mov     ah, 0x0F
+        int     0x10
+        cmp     al, 3
+        je      .in_text
+        mov     ax, 0x0003
+        int     0x10
+.in_text:
+        pop     ax
+        mov     si, msg_io_w
         mov     eax, [io_writes]
         call    io_say
         mov     si, msg_io_r
@@ -1031,6 +1080,9 @@ io_report:
         call    io_say
         mov     si, msg_io_frames
         mov     eax, [au_frames]
+        call    io_say
+        mov     si, msg_io_late
+        mov     eax, [au_late]
         call    io_say
         mov     si, msg_io_blk
         mov     eax, [sb_blocks]
@@ -1063,6 +1115,7 @@ io_report:
 msg_io_calls:   db "SB: the pump was asked       ", 0
 msg_io_ready:   db "SB: ...with a stream to fill ", 0
 msg_io_frames:  db "SB: frames it laid down      ", 0
+msg_io_late:    db "SB: times it fell behind     ", 0
 msg_io_blk:     db "SB: blocks played out        ", 0
 msg_io_ring:    db "SB: the audio ring at        ", 0
 msg_io_rate:    db "SB: the stream plays at      ", 0
@@ -1134,6 +1187,9 @@ au_calls:       dd 0                    ; times the pump was asked to run
 au_ready:       dd 0                    ; times it had a stream to fill
 au_frames:      dd 0                    ; frames it laid down
 au_primed:      db 0                    ; the write position has been placed
+                align 4
+au_lead:        dd AU_LEAD_SLOW         ; how far ahead of the hardware to fill
+au_late:        dd 0                    ; times the hardware overtook the pump
 sb_irq_owed:    db 0                    ; a block is done; the card would say so
 sb_card_irq:    db 0                    ; ...and has not been acknowledged yet
 pic_isr:        db 0                    ; the card's interrupt is being served

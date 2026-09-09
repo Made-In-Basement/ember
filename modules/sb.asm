@@ -85,6 +85,28 @@ TSS_SIZE        equ TSS_IOPB + IOPB_BYTES + 1
 PIC_M_BASE      equ 0x20
 PIC_S_BASE      equ 0x28
 
+; ---- what feeds the sound ---------------------------------------------------
+;  The pump has to run often enough that the audio ring never empties and,
+;  now that there is a synthesiser behind it, often enough that music is made
+;  close to the moment it is played: anything rendered far ahead of time is
+;  rendered from registers the game has not written yet, and a tune comes out
+;  in lumps.
+;
+;  The obvious clock is the timer, and the obvious trick is to run it faster
+;  than the game asked and pass the game every Nth tick.  That works, and
+;  every monitor of this kind does it, but it means lying to a game about the
+;  one clock it uses for everything - and a game that reads the counter
+;  rather than counting interrupts gets a wrong answer.
+;
+;  So this uses the other clock instead.  The real-time chip has a periodic
+;  interrupt of its own on the second controller's first line, nothing in a
+;  DOS game has ever used it, and it is nobody's timebase.  At 256 a second
+;  the pump runs every four milliseconds and the game's timer is left exactly
+;  as the game set it.
+RTC_RATE        equ 8                   ; 32768 >> (rate - 1) = 256 a second
+RTC_IRQ         equ 8                   ; as this monitor numbers them
+RTC_IRQ_SLAVE   equ 0                   ; ...and as the second controller does
+
 ; ---- the frame a fault leaves, once a stub has pushed everything ------------
 ;  Deliberately the same shape as the DPMI host's, so io_decode.inc reads
 ;  both.  The four words below EDI are padding there; here they are padding
@@ -340,6 +362,7 @@ v86_enter:
         mov     ax, cs
         mov     ds, ax
         call    pic_remap                       ; out of the exceptions' way
+        call    rtc_start                       ; and a clock to make sound by
         lgdt    [gdtr]
         lidt    [idtr]
         mov     eax, cr0
@@ -492,7 +515,14 @@ v86_dispatch:
         shl     esi, 4
         movzx   eax, word [ebp + F_EIP]
         add     esi, eax                        ; where it is, linearly
-        xor     ebx, ebx                        ; bl: length so far, bh: 66h
+        ; EBX is the offset of the byte being looked at, and nothing else.
+        ; The operand-size prefix used to be remembered in BH, which is the
+        ; top half of that same offset: one 66h and every byte after it was
+        ; fetched from 256 bytes further on.  Everything without a 66h in
+        ; front of it worked, which is nearly everything a program writes -
+        ; and not the BIOS, whose PUSHFD is 66 9C.
+        mov     byte [op66], 0
+        xor     ebx, ebx                        ; the byte being looked at
 .prefix:
         mov     al, [gs:esi + ebx]
         cmp     al, 0x66
@@ -518,7 +548,7 @@ v86_dispatch:
         cmp     al, 0x65
         je      .pnext
         jmp     .opcode
-.p66:   mov     bh, 1
+.p66:   mov     byte [op66], 1
 .pnext: inc     bl
         cmp     bl, 8
         jb      .prefix
@@ -586,7 +616,7 @@ v86_dispatch:
 .pushf:
         mov     eax, [ebp + F_EFL]
         and     eax, ~(EFL_VM | EFL_NT)         ; nothing about where it is
-        cmp     bh, 0
+        cmp     byte [op66], 0
         je      .pushf16
         push    eax
         shr     eax, 16
@@ -598,7 +628,7 @@ v86_dispatch:
 .popf:
         call    v86_pop
         movzx   ecx, ax
-        cmp     bh, 0
+        cmp     byte [op66], 0
         je      .popf_have
         call    v86_pop                         ; the half nobody reads
 .popf_have:
@@ -627,19 +657,19 @@ v86_dispatch:
 .iret:
         call    v86_pop
         movzx   ecx, ax                         ; IP
-        cmp     bh, 0
+        cmp     byte [op66], 0
         je      .iret_cs
         call    v86_pop
 .iret_cs:
         call    v86_pop
         movzx   edx, ax                         ; CS
-        cmp     bh, 0
+        cmp     byte [op66], 0
         je      .iret_fl
         call    v86_pop
 .iret_fl:
         call    v86_pop
         movzx   eax, ax                         ; and the flags
-        cmp     bh, 0
+        cmp     byte [op66], 0
         je      .iret_set
         push    eax
         call    v86_pop
@@ -656,9 +686,24 @@ v86_dispatch:
 .hardware:
         sub     al, PIC_M_BASE
         mov     [irq_line], al
+        cmp     al, RTC_IRQ                     ; the clock this monitor asked
+        jne     .not_ours                       ;  for is not the program's
+        ; Register C, read, is what tells the chip its interrupt has been
+        ; noticed; without it there is one and never another.  Inline, because
+        ; the same bytes assembled for sixteen bits mean something else here.
+        mov     al, 0x0C
+        out     0x70, al
+        out     0x80, al
+        in      al, 0x71
+        call    io_pump
+        mov     al, 0x20                        ; both controllers, ourselves
+        out     0xA0, al
+        out     0x20, al
+        ret
+.not_ours:
         or      al, al
         jnz     .not_timer
-        call    io_pump                         ; keep the sound fed
+        call    io_pump                         ; the timer keeps it fed too
 .not_timer:
         movzx   eax, byte [irq_line]
         cmp     al, 8
@@ -842,6 +887,7 @@ rm_resume:
         lidt    [idtr_real]
         mov     ss, [ret_ss]                    ; the program's own stack, back
         mov     sp, [ret_sp]                    ;  before anything is called
+        call    rtc_stop
         call    pic_restore
         push    word [cs:ret_fl]
         push    word [cs:ret_cs]
@@ -866,6 +912,17 @@ rm_resume:
 ; program_fault: an exception the program cannot have meant.  Leave virtual-
 ;   8086 mode the ordinary way, then say where it was and end the program.
 program_fault:
+        ; The eight bytes at the fault, because "exception 13" says only that
+        ; something was refused and not what: an instruction this monitor does
+        ; not emulate looks exactly like one it does.
+        movzx   esi, word [ebp + F_CS]
+        shl     esi, 4
+        movzx   eax, word [ebp + F_EIP]
+        add     esi, eax
+        mov     eax, [gs:esi]
+        mov     [fault_code], eax
+        mov     eax, [gs:esi + 4]
+        mov     [fault_code + 4], eax
         mov     eax, [ebp + F_VEC]
         mov     [fault_vec], eax
         mov     eax, [ebp + F_ERR]
@@ -910,6 +967,16 @@ leave_pm_fault:
         mov     cr0, eax
         jmp     far [cs:rm_fault_ptr]
 
+; rm_nibble: the low four bits of AL, as a character
+rm_nibble:
+        and     al, 0x0F
+        cmp     al, 10
+        jb      .digit
+        add     al, 7
+.digit: add     al, '0'
+        SVC     SVC_PUTC
+        ret
+
 rm_fault:
         mov     ax, cs
         mov     ds, ax
@@ -917,8 +984,16 @@ rm_fault:
         mov     ss, ax
         mov     sp, rm_stack_top                ; our own, whatever was left
         lidt    [idtr_real]
+        call    rtc_stop
         call    pic_restore
         sti
+        ; Text mode first.  A program that faults has usually put the screen
+        ; into a graphics mode of its own, and a report written onto that is
+        ; a report nobody reads: the shell puts the screen back on the way
+        ; out and takes the report with it.  Setting mode 3 here means the
+        ; shell finds it already set and leaves the screen alone.
+        mov     ax, 0x0003
+        int     0x10
         call    io_report
         call    io_audio_close
         mov     si, msg_fault
@@ -940,6 +1015,25 @@ rm_fault:
         SVC     SVC_PUTS
         mov     ax, [fault_err]
         SVC     SVC_PRINT_HEX16
+        cmp     byte [fault_kind], 2
+        je      .no_code
+        mov     si, msg_fault_code
+        SVC     SVC_PUTS
+        xor     bx, bx
+.byte:  mov     al, [fault_code + bx]
+        push    bx
+        mov     bl, al
+        shr     al, 4
+        call    rm_nibble
+        mov     al, bl
+        call    rm_nibble
+        mov     al, ' '
+        SVC     SVC_PUTC
+        pop     bx
+        inc     bx
+        cmp     bx, 8
+        jb      .byte
+.no_code:
         SVC     SVC_CRLF
         mov     si, msg_fault
         mov     eax, [fault_ip]
@@ -993,6 +1087,87 @@ pic_remap:
         mov     al, [pic_saved_s]
         out     0xA1, al
         call    io_settle
+        pop     ax
+        ret
+
+; -----------------------------------------------------------------------------
+; rtc_start / rtc_stop: the real-time chip's periodic interrupt, borrowed.
+;   Register A holds the rate, register B switches it on, and register C has
+;   to be read after every one or no more arrive.  What was there before is
+;   put back on the way out, because the chip is also where the time of day
+;   comes from and this is only a loan.
+; -----------------------------------------------------------------------------
+rtc_start:
+        push    ax
+        cli
+        mov     al, 0x8A                        ; register A, and no NMI
+        out     0x70, al
+        call    io_settle
+        in      al, 0x71
+        mov     [rtc_saved_a], al
+        and     al, 0xF0
+        or      al, RTC_RATE
+        mov     ah, al
+        mov     al, 0x8A
+        out     0x70, al
+        call    io_settle
+        mov     al, ah
+        out     0x71, al
+        call    io_settle
+        mov     al, 0x8B                        ; register B: the periodic bit
+        out     0x70, al
+        call    io_settle
+        in      al, 0x71
+        mov     [rtc_saved_b], al
+        or      al, 0x40
+        mov     ah, al
+        mov     al, 0x8B
+        out     0x70, al
+        call    io_settle
+        mov     al, ah
+        out     0x71, al
+        call    io_settle
+        call    rtc_ack                         ; anything already pending
+        in      al, 0xA1                        ; and let the line through
+        and     al, ~(1 << RTC_IRQ_SLAVE)
+        out     0xA1, al
+        mov     byte [rtc_on], 1
+        mov     dword [au_lead], AU_LEAD_FAST   ; four milliseconds of clock
+        pop     ax
+        ret
+
+rtc_stop:
+        push    ax
+        cmp     byte [rtc_on], 0
+        je      .done
+        mov     byte [rtc_on], 0
+        mov     dword [au_lead], AU_LEAD_SLOW
+        cli
+        mov     al, 0x8B                        ; the periodic bit, back as found
+        out     0x70, al
+        call    io_settle
+        mov     al, [rtc_saved_b]
+        out     0x71, al
+        call    io_settle
+        mov     al, 0x8A
+        out     0x70, al
+        call    io_settle
+        mov     al, [rtc_saved_a]
+        out     0x71, al
+        call    io_settle
+        mov     al, 0x0D                        ; leave the index somewhere
+        out     0x70, al                        ;  harmless, as the BIOS does
+.done:  pop     ax
+        ret
+
+; rtc_ack: read register C, which is what tells the chip its interrupt has
+;   been noticed.  Without this it raises one and never another.
+rtc_ack:
+        push    ax
+        mov     al, 0x0C
+        out     0x70, al
+        call    io_settle
+        in      al, 0x71
         pop     ax
         ret
 
@@ -1065,6 +1240,7 @@ host_base:      dd 0
 r0_top:         dd 0
 in_v86:         db 0
 irq_line:       db 0
+op66:           db 0                            ; an operand-size prefix seen
 isr_age:        db 0
 fault_kind:     db 0
                 align 4
@@ -1076,6 +1252,9 @@ fault_cs:       dd 0
 pic_saved_m:    db 0
 pic_saved_s:    db 0
 pic_want_m:     db 0
+rtc_on:         db 0
+rtc_saved_a:    db 0
+rtc_saved_b:    db 0
                 align 4
 ; the machine as it was when a program started, and as it is when one ends
 ent_eax:        dd 0
@@ -1118,6 +1297,9 @@ msg_fault_here: db "SB: the monitor itself faulted, exception ", 0
 msg_back:       db "SB: back in real mode", 13, 10, 0
 msg_fault_at:   db " at ", 0
 msg_fault_err:  db " error ", 0
+msg_fault_code: db ", on the bytes ", 0
+                align 4
+fault_code:     times 8 db 0
 msg_irqs:       db "SB: the card own interrupts  ", 0
 
 ; =============================================================================

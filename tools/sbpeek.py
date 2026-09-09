@@ -23,6 +23,22 @@ FIELDS = [
     ('the reply',                 'B'), ('has a second',             'B'),
     ('the second',                'B'), ('parameters expected',      'B'),
     ('the last command',          'B'), ('parameters so far',        'B'),
+    ('parameters',               '4s'), ('the time constant',        'B'),
+    ('the block length',          'H'), ('keeps playing',            'B'),
+    ('playing',                   'B'), ('the speaker on',           'B'),
+    ('(pad)',                    '3s'), ('transfers begun',          'I'),
+    ('the flip-flop',             'B'), ('the channel mask',         'B'),
+    ('addresses',                '8s'), ('counts',                  '8s'),
+    ('pages',                    '4s'), ('modes',                   '4s'),
+    ('a stream',                  'B'), ('(pad)',                   '1s'),
+    ('the ring at',               'I'), ('the ring size',            'I'),
+    ('the position register',     'I'), ('the rate',                 'I'),
+    ('the write position',        'I'), ('the buffer position',      'I'),
+    ('the step',                  'I'), ('the buffer at',            'I'),
+    ('blocks played',             'I'), ('THE PUMP WAS ASKED',       'I'),
+    ('...with a stream to fill',  'I'), ('FRAMES LAID DOWN',         'I'),
+    ('primed',                    'B'), ('(pad)',                   '3s'),
+    ('THE LEAD IT KEEPS',         'I'), ('TIMES IT FELL BEHIND',     'I'),
 ]
 
 
@@ -38,7 +54,12 @@ def main():
     for name, fmt in FIELDS:
         v = struct.unpack_from('<' + fmt, d, o)[0]
         o += struct.calcsize(fmt)
-        print('  %-26s %d' % (name, v))
+        if name == '(pad)':
+            continue
+        if isinstance(v, bytes):
+            print('  %-26s %s' % (name, v.hex()))
+        else:
+            print('  %-26s %d' % (name, v))
 
 
 if __name__ == '__main__':
