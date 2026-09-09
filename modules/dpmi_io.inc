@@ -188,6 +188,10 @@ io_dev_out:
         je      .pit_data
         cmp     dx, IO_GATE
         je      .gate
+        cmp     dx, 0x224
+        je      .mix_addr
+        cmp     dx, 0x225
+        je      .mix_data
         cmp     dx, 0x226
         je      .dsp_reset
         cmp     dx, 0x22C
@@ -223,6 +227,32 @@ io_dev_out:
 .escape:
         mov     byte [io_leave], 1
         jmp     .done
+; ---- the mixer a Pro has, which is part of how a Pro is recognised ---------
+; Writing register 0 resets it; everything else is remembered and reads back,
+; which is the test a program makes of it.
+.mix_addr:
+        mov     [mix_index], al
+        jmp     .done
+.mix_data:
+        movzx   ebx, byte [mix_index]
+        or      bl, bl
+        jz      .mix_reset
+        mov     [mix_regs + ebx], al
+        jmp     .done
+.mix_reset:
+        push    edi
+        push    ecx
+        push    eax
+        mov     edi, mix_regs
+        mov     ecx, 256
+        xor     eax, eax
+        mov     al, 0xBB                ; what a Pro comes up with: middling
+        rep     stosb
+        pop     eax
+        pop     ecx
+        pop     edi
+        jmp     .done
+
 ; ---- the speaker -----------------------------------------------------------
 ; A program makes a note by programming timer channel 2 and opening the gate
 ; in port 61h.  On this machine that signal goes nowhere: there is no beeper,
@@ -317,6 +347,20 @@ io_dev_out:
         add     ebx, 256
 .store: mov     [opl_regs + ebx], al
         inc     dword [opl_writes]
+        cmp     bl, 4                   ; the timer control register
+        jne     .done
+        cmp     byte [opl_bank], 0
+        jne     .done
+        ; A program finds a synthesiser by resetting the timer flags, reading
+        ; the status (nothing set), starting a timer, waiting, and reading
+        ; again (both set).  There is no time here to wait through, so a timer
+        ; that has been started has already expired.
+        test    al, 0x80                ; bit 7 resets the flags
+        jz      .timer_run
+        mov     byte [opl_timer_flags], 0
+        jmp     .done
+.timer_run:
+        mov     byte [opl_timer_flags], 0xC0
         jmp     .done
 ; ---- the DSP's reset: 1 then 0 means "are you there?", answered with AAh ----
 .dsp_reset:
@@ -581,6 +625,8 @@ io_dev_in:
         je      .fm_status
         cmp     dx, 0x220
         je      .fm_status
+        cmp     dx, 0x225
+        je      .mix_read
         cmp     dx, 0x22A
         je      .dsp_read
         cmp     dx, 0x22C
@@ -632,19 +678,16 @@ io_dev_in:
         pop     ebx
         ret
 
-; The synthesiser's status: the timers, which a program uses to decide the
-; chip is really there.  Both bits set once a timer has been started and
-; expired, which as far as anyone outside can tell is immediately.
+; The synthesiser's status: the timer flags, kept by the writes to register
+; 4 rather than worked out here, so that a program reading twice in a row
+; gets the same answer both times.
 .fm_status:
-        mov     al, [opl_regs + 4]      ; the timer control register
-        test    al, 0x80                ; a reset of the flags
-        jnz     .fm_clear
-        mov     al, [opl_timer_flags]
+        movzx   eax, byte [opl_timer_flags]
         pop     ebx
         ret
-.fm_clear:
-        mov     byte [opl_timer_flags], 0
-        xor     eax, eax
+.mix_read:
+        movzx   ebx, byte [mix_index]
+        movzx   eax, byte [mix_regs + ebx]
         pop     ebx
         ret
 .dsp_read:
@@ -712,12 +755,12 @@ io_pump:
         ; What is making a sound?  Either, both, or - once something has -
         ; neither, which still has to be written, because the ring plays on
         ; whatever is in it and silence has to be put there.
-        mov     byte [pump_dsp], 0
-        cmp     byte [sb_playing], 0
-        je      .no_dsp
-        cmp     byte [sb_speaker], 0            ; a game that muted the card
-        je      .no_dsp
-        mov     byte [pump_dsp], 1
+        ; A transfer runs whether or not the speaker is on: the speaker only
+        ; decides whether anyone hears it, and a program that never turns it
+        ; on still expects to be told its block has been played.  That is how
+        ; some of them decide the card is there at all.
+        mov     al, [sb_playing]
+        mov     [pump_dsp], al
 .no_dsp:
         mov     al, [pump_dsp]
         or      al, [pcs_on]
@@ -815,6 +858,8 @@ io_pump:
         movzx   eax, byte [gs:eax]
         sub     eax, 128                        ; the card's silence is 80h
         shl     eax, 8                          ; and this stream's is zero
+        cmp     byte [sb_speaker], 0            ; ...but muted if it is muted
+        je      .no_sample
         mov     ebx, eax
 .no_sample:
         ; and the square wave the timer describes, added to it
@@ -1071,6 +1116,9 @@ pcs_reload:     dw 0
                 align 4
 pcs_step:       dd 0                    ; through the wave, per frame, 16.16
 pcs_phase:      dd 0
+mix_index:      db 0
+                align 4
+mix_regs:       times 256 db 0
                 align 4
 opl_regs:       times 512 db 0
 io_state_end:
