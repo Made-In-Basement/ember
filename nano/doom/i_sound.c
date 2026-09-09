@@ -13,9 +13,16 @@
 #include "doomstat.h"
 #include "sounds.h"
 #include "steptab.h"
+#include "opl3.h"
+#include "musopl.h"
 
 #define NUM_CHANNELS 8
-#define LEAD_FRAMES  2048               /* ~46 ms queued ahead of the DMA */
+/* The ring holds 16384 frames, and the game tops it up once per rendered
+   frame.  46 ms of lead was less than one slow frame at this screen size, so
+   any hitch left the hardware playing stale samples; 93 ms costs latency a
+   gunshot can afford and a starved ring cannot. */
+#define LEAD_FRAMES  4096               /* ~93 ms queued ahead of the DMA */
+#define MUS_RATE     44100
 
 typedef struct {
     const unsigned char *data;
@@ -36,7 +43,53 @@ static chan_t ch[NUM_CHANNELS];
 static int uniq_counter;
 static const unsigned char *sfx_data[NUMSFX];
 static unsigned sfx_len[NUMSFX], sfx_rate[NUMSFX];
-static int snd_sfxvol = 15, snd_musvol = 0;
+static int snd_sfxvol = 15, snd_musvol = 8;
+
+/* ---- music -----------------------------------------------------------------
+   An OPL3 in software, fed by the same MUS scores and GENMIDI instruments a
+   real Sound Blaster would have been given.  Its output is mixed into the
+   ring alongside the effects, so the music costs no interrupts of its own:
+   it is generated in the same pass that keeps the DMA fed. */
+static struct opl3 opl;
+static struct mus_player mus;
+static int music_ready;                 /* GENMIDI was found and understood */
+static int music_on;                    /* a song is registered and playing */
+static int tick_left;                   /* frames until the next 140 Hz tick */
+static int16_t mus_buf[LEAD_FRAMES * 2];
+
+static void music_render(int frames);
+
+/* Frames the hardware played while the game was not looking.  The music has
+   to live through them or it falls behind the world: rendered and thrown
+   away, so both the score and the chip's envelopes arrive where they would
+   have been. */
+static void music_skip(int frames)
+{
+    while (frames > 0) {
+        int n = frames > LEAD_FRAMES ? LEAD_FRAMES : frames;
+        music_render(n);
+        frames -= n;
+    }
+}
+
+static void music_render(int frames)
+{
+    int16_t *dst = mus_buf;
+    while (frames > 0) {
+        int n = frames;
+        if (tick_left <= 0) {
+            if (!mus_tick(&mus))
+                music_on = 0;
+            tick_left = MUS_RATE / MUS_TICK_HZ;
+        }
+        if (n > tick_left)
+            n = tick_left;
+        opl3_render(&opl, dst, n);
+        dst += n * 2;
+        frames -= n;
+        tick_left -= n;
+    }
+}
 
 /* debug counters at a fixed low address (dumped with the QEMU harness) */
 volatile uint32_t snd_dbg[16];
@@ -86,6 +139,7 @@ void I_InitSound(void)
            pcm.ring_phys, ring_frames, pcm.rate);
     sys_logf("NDOOM: HDA ring %08X, %u frames, LPIB at %08X", pcm.ring_phys,
              ring_frames, pcm.lpib_phys);
+    I_InitMusic();                      /* nothing else in Doom calls it */
     for (i = 1; i < NUMSFX; i++) {
         if (!S_sfx[i].link) load_sfx(i);
     }
@@ -198,14 +252,27 @@ void I_UpdateSound(void)
     { int i, a = 0; for (i = 0; i < NUM_CHANNELS; i++) if (ch[i].data) a++; dbg[DBG_ACTIVE] = a; }
     ahead = (wpos - hw + ring_frames) % ring_frames;
     if (ahead > ring_frames / 2) {              /* the hardware overtook us */
-        wpos = (hw + LEAD_FRAMES / 2) % ring_frames;
+        unsigned skip;
+        unsigned newpos = (hw + LEAD_FRAMES / 2) % ring_frames;
+        skip = (newpos - wpos + ring_frames) % ring_frames;
+        wpos = newpos;
         ahead = LEAD_FRAMES / 2;
+        if (music_on && skip)
+            music_skip((int)skip);
     }
     if (ahead >= LEAD_FRAMES) return;
     n = LEAD_FRAMES - ahead;
     w = wpos;
+    if (music_on && snd_musvol > 0)
+        music_render((int)n);
+    { unsigned mi = 0;
     while (n--) {
         int l = 0, r = 0, i;
+        if (music_on && snd_musvol > 0) {
+            l = (mus_buf[mi * 2] * snd_musvol) >> 5;
+            r = (mus_buf[mi * 2 + 1] * snd_musvol) >> 5;
+            mi++;
+        }
         for (i = 0; i < NUM_CHANNELS; i++) {
             chan_t *c = &ch[i];
             int s;
@@ -224,6 +291,7 @@ void I_UpdateSound(void)
         dbg[DBG_FRAMES]++;
         if (++w >= ring_frames) w = 0;
     }
+    }
     if (w >= wpos) cache_flush((const void *)(ring + wpos * 2), (w - wpos) * 4);
     else {
         cache_flush((const void *)(ring + wpos * 2), (ring_frames - wpos) * 4);
@@ -236,13 +304,79 @@ void I_SubmitSound(void)
 {
 }
 
-/* ---- music: not available (no OPL synthesizer yet) ---- */
-void I_InitMusic(void) {}
-void I_ShutdownMusic(void) {}
-void I_PauseSong(int handle) { (void)handle; }
-void I_ResumeSong(int handle) { (void)handle; }
-int  I_RegisterSong(void *data) { (void)data; return 1; }
-void I_PlaySong(int handle, int looping) { (void)handle; (void)looping; }
-void I_StopSong(int handle) { (void)handle; }
-void I_UnRegisterSong(int handle) { (void)handle; }
-int  I_QrySongPlaying(int handle) { (void)handle; return 0; }
+/* ---- music ----------------------------------------------------------------
+   Doom hands over a MUS lump and expects a handle back.  There is only ever
+   one song, so the handle is a formality. */
+void I_InitMusic(void)
+{
+    const void *gen;
+    int len, lump;
+    if (!sound_ok)
+        return;
+    lump = W_CheckNumForName("GENMIDI");        /* a WAD may not carry one */
+    if (lump < 0) {
+        sys_logf("NDOOM: no GENMIDI, music off");
+        return;
+    }
+    gen = W_CacheLumpNum(lump, PU_STATIC);
+    len = W_LumpLength(lump);
+    opl3_reset(&opl, MUS_RATE);
+    music_ready = mus_bank(&mus, gen, len) == 0;
+    sys_logf("NDOOM: GENMIDI %d bytes, OPL %s", len,
+             music_ready ? "ready" : "not understood");
+}
+
+void I_ShutdownMusic(void)
+{
+    music_on = 0;
+}
+
+void I_PauseSong(int handle)
+{
+    (void)handle;
+    if (music_on) { mus_all_off(&mus); music_on = 0; }
+}
+
+void I_ResumeSong(int handle)
+{
+    (void)handle;
+    if (music_ready && !mus.done) music_on = 1;
+}
+
+int I_RegisterSong(void *data)
+{
+    const unsigned char *m = (const unsigned char *)data;
+    int len;
+    if (!music_ready || !m)
+        return 1;
+    /* The lump carries its own extent: the score's start plus its length. */
+    len = (m[6] | (m[7] << 8)) + (m[4] | (m[5] << 8));
+    if (mus_load(&mus, &opl, m, len)) {
+        sys_logf("NDOOM: song is not MUS");
+        return 1;
+    }
+    tick_left = 0;
+    return 1;
+}
+
+void I_PlaySong(int handle, int looping)
+{
+    (void)handle;
+    if (!music_ready)
+        return;
+    mus.loop = looping;
+    music_on = !mus.done;
+}
+
+void I_StopSong(int handle)
+{
+    (void)handle;
+    if (music_on) { mus_all_off(&mus); music_on = 0; }
+}
+
+void I_UnRegisterSong(int handle)
+{
+    I_StopSong(handle);
+}
+
+int I_QrySongPlaying(int handle) { (void)handle; return music_on; }

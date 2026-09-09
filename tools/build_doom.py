@@ -4,7 +4,7 @@ Uses id Software's GPL linuxdoom-1.10 sources (downloaded to
 build/src_dl/DOOM-master) with the platform layer in nano/doom, the runtime
 in nano/, and Zig's bundled clang/lld as the freestanding i386 toolchain.
 """
-import glob, os, re, shutil, subprocess, sys
+import glob, os, re, shutil, subprocess, sys, time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SRC = os.path.join(ROOT, 'build', 'src_dl', 'DOOM-master', 'linuxdoom-1.10')
@@ -123,7 +123,7 @@ def main():
               '-mno-sse2', '-mno-mmx', '-fno-strict-aliasing',
               '-fno-asynchronous-unwind-tables', '-fno-unwind-tables', '-nostdinc',
               '-DNORMALUNIX', '-DLINUX', '-I' + INC, '-I' + os.path.join(ROOT, 'nano', 'include'),
-              '-I' + src]
+              '-I' + os.path.join(ROOT, 'nano', 'opl'), '-I' + src]
     # clang's own builtin headers (stddef.h, stdint.h, stdarg.h, limits.h)
     res = subprocess.run([zig, 'cc', '-target', 'x86-freestanding', '-print-resource-dir'],
                          capture_output=True, text=True)
@@ -133,6 +133,7 @@ def main():
     sources += [s for s in sorted(glob.glob(os.path.join(ROOT, 'nano', '*.c')))
                 if not s.endswith('hello.c')]
     sources += sorted(glob.glob(os.path.join(ROOT, 'nano', 'doom', '*.c')))
+    sources += sorted(glob.glob(os.path.join(ROOT, 'nano', 'opl', '*.c')))
     sources += [os.path.join(ROOT, 'nano', 'start.S')]
     objs = []
     failed = 0
@@ -207,6 +208,8 @@ def build_app(name, src_files, out_name, extra_inc=()):
               '-I' + os.path.join(ROOT, 'nano', 'include')]
     for d in extra_inc:
         cflags.append('-I' + d)
+    if os.environ.get('VOX_BUILD'):
+        cflags.append('-DVOX_BUILD="' + os.environ['VOX_BUILD'] + '"')
     res = subprocess.run([zig, 'cc', '-target', 'x86-freestanding', '-print-resource-dir'],
                          capture_output=True, text=True)
     if res.returncode == 0 and res.stdout.strip():
@@ -313,6 +316,25 @@ def build_fly():
     build_app('fly', [os.path.join(ROOT, 'nano', 'gpu', 'fly.c')], 'FLY.N32')
 
 
+def build_voxel():
+    """VOXEL.N32: the block world, drawn by the 3D engine.
+
+    game.c is the author's own, unchanged; everything beside it is the
+    platform Ember gives it.  The shim headers in nano/voxel/include point
+    the C99 sources at nanolibc, the way Doom's build does.
+    """
+    d = os.path.join(ROOT, 'nano', 'voxel')
+    os.environ['VOX_BUILD'] = time.strftime('%H%M%S')
+    build_app('voxel',
+              [os.path.join(d, 'game.c'),
+               os.path.join(d, 'runner.c'),
+               os.path.join(d, 'platform_ember.c'),
+               os.path.join(d, 'render_gpu.c'),
+               os.path.join(ROOT, 'nano', 'gui', 'input.c')],
+              'VOXEL.N32',
+              extra_inc=(d, os.path.join(d, 'include'), os.path.join(ROOT, 'nano', 'gui')))
+
+
 if __name__ == '__main__':
     if '--hello' in sys.argv:
         build_hello()
@@ -322,6 +344,8 @@ if __name__ == '__main__':
         build_render()
     elif '--fly' in sys.argv:
         build_fly()
+    elif '--voxel' in sys.argv:
+        build_voxel()
     elif '--player' in sys.argv:
         build_player()
     elif '--gui' in sys.argv:
