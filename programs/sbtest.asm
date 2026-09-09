@@ -43,6 +43,12 @@ start:
         mov     bx, 0x1000                      ; hand the rest of memory back
         mov     ah, 0x4A
         int     0x21
+        mov     bx, 0x0100                      ; 4 KB for samples to come from
+        mov     ah, 0x48
+        int     0x21
+        jc      .no_buf
+        mov     [buf_seg], ax
+.no_buf:
         mov     bx, [host_paras]
         or      bx, bx
         jz      .no_data
@@ -135,6 +141,77 @@ protected:
         in      al, dx
         call    put_hex8
         mov     si, msg_fm_tail
+        call    puts
+
+        ; ---- 4. programme a transfer, the way a game does ----
+        cmp     word [buf_seg], 0
+        je      .no_transfer
+        mov     si, msg_dma
+        call    puts
+
+        mov     dx, 0x22C                       ; the speaker on
+        mov     al, 0xD1
+        out     dx, al
+        mov     al, 0x40                        ; and the rate: 11 kHz
+        out     dx, al
+        mov     al, 0xA5
+        out     dx, al
+
+        mov     dx, 0x0A                        ; hold channel 1 still
+        mov     al, 0x05
+        out     dx, al
+        mov     dx, 0x0C                        ; and start its halves afresh
+        xor     al, al
+        out     dx, al
+        mov     dx, 0x0B                        ; read from memory, one pass
+        mov     al, 0x49
+        out     dx, al
+
+        movzx   eax, word [buf_seg]             ; the buffer, as the bus sees it
+        shl     eax, 4
+        mov     [buf_phys], eax
+        mov     dx, 0x02
+        out     dx, al                          ; address, low half
+        mov     al, ah
+        out     dx, al                          ; and high
+        shr     eax, 16
+        mov     dx, 0x83                        ; the page above them
+        out     dx, al
+
+        mov     dx, 0x03                        ; how many bytes, less one
+        mov     al, 0xFF
+        out     dx, al
+        mov     al, 0x0F
+        out     dx, al
+
+        mov     dx, 0x0A                        ; let it go
+        mov     al, 0x01
+        out     dx, al
+
+        mov     dx, 0x22C                       ; the block the DSP will play
+        mov     al, 0x48
+        out     dx, al
+        mov     al, 0xFF
+        out     dx, al
+        mov     al, 0x0F
+        out     dx, al
+        mov     al, 0x1C                        ; and keep playing it
+        out     dx, al
+
+        mov     si, msg_dma_at
+        call    puts
+        mov     eax, [buf_phys]
+        shr     eax, 16
+        call    put_hex8
+        mov     eax, [buf_phys]
+        shr     eax, 8
+        call    put_hex8
+        mov     eax, [buf_phys]
+        call    put_hex8
+        call    crlf
+        jmp     leave
+.no_transfer:
+        mov     si, msg_no_buf
         call    puts
 
 leave:
@@ -296,7 +373,10 @@ msg_no_answer: db "  nothing answered the reset", 13, 10, 0
 msg_version:   db "  the version it claims   ", 0
 msg_fm:        db "  the synthesiser's timers ", 0
 msg_fm_tail:   db "  (C0h once both have run)", 13, 10, 0
-msg_bye:       db 13, 10, "Leaving.", 13, 10, 0
+msg_dma:       db "  a transfer, programmed as a game would", 13, 10, 0
+msg_dma_at:    db "  the buffer it was given ", 0
+msg_no_buf:    db "  no memory for a buffer", 13, 10, 0
+msg_bye:       db 13, 10, "Leaving; EMBER.LOG has what the card was told.", 13, 10, 0
 
 msg_crlf:      db 13, 10, 0
 
@@ -306,6 +386,8 @@ host_paras:    dw 0
 got_reset:     db 0
 ver_major:     db 0
 ver_minor:     db 0
+buf_seg:       dw 0
+buf_phys:      dd 0
 char_buf:      times 4 db 0
 rmcs:          times 50 db 0
 out_buf:       times 256 db 0

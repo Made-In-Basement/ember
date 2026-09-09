@@ -885,6 +885,7 @@ rm_resume:
 ;   everything, then run the request for real.  It does not come back.
 rm_terminate:
         mov     byte [client_active], 0
+        call    io_report                       ; what it asked the card for
         call    psp_env_restore
         call    xms_give
         mov     byte [rm_kind], 0
@@ -945,6 +946,7 @@ rm_print_hex32:
 ; rm_fault: an exception nobody handled.  Say where, and end the program.
 rm_fault:
         mov     byte [client_active], 0
+        call    io_report                       ; what it had asked the card for
         call    psp_env_restore
         call    xms_give
         mov     si, msg_fault
