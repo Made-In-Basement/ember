@@ -567,6 +567,7 @@ build_tss:
         mov     word [tss + 102], TSS_IOPB      ; the bitmap's offset
         mov     byte [tss + TSS_IOPB + IOPB_BYTES], 0xFF    ; the closing byte
         pop     es
+        call    io_trap_setup           ; ...except the card own ports
         ret
 
 ; build_cb_stubs: CALLBACKS little real-mode routines, "push n; jmp cb_common"
@@ -976,6 +977,7 @@ rm_fault:
 
 %include "dpmi_pm.inc"
 %include "dpmi_31.inc"
+%include "dpmi_io.inc"
 
 ; =============================================================================
 section .data
