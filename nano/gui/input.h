@@ -16,6 +16,7 @@ void input_inject_mouse(int dx, int dy, int buttons);   /* dy positive = down */
 void input_inject_absolute(int x, int y, int down);     /* a finger on a screen */
 void input_inject_key(int scan, int ch);                /* the keyboard on the screen */
 int  input_shift_held(void);
+extern unsigned char input_key_down[128];       /* scancode -> held now */
 void input_start_keyboard(void);
 void input_fast_timer(int on);          /* 100 Hz heartbeat so the loop can sleep, not spin */
 void input_close(void);

@@ -130,5 +130,17 @@ double fabs(double x);
 double floor(double x);
 double sqrt(double x);
 double pow(double x, double y);
+/* the float forms C99 code reaches for, and the two the x87 does itself */
+float fabsf(float x);
+float floorf(float x);
+float sqrtf(float x);
+float sinf(float x);
+float cosf(float x);
+float fmodf(float x, float y);
+/* isfinite without <math.h>: a NaN is unequal to itself, and an infinity
+   minus itself is a NaN rather than zero. */
+#ifndef isfinite
+#define isfinite(x) ((x) == (x) && (x) - (x) == 0)
+#endif
 
 #endif

@@ -251,6 +251,22 @@ int64_t __moddi3(int64_t a, int64_t b)
 double fabs(double x) { return x < 0 ? -x : x; }
 double floor(double x) { long i = (long)x; return (x < 0 && (double)i != x) ? i - 1 : i; }
 double sqrt(double x) { double r; __asm__("fsqrt" : "=t"(r) : "0"(x)); return r; }
+float fabsf(float x) { return x < 0 ? -x : x; }
+float floorf(float x) { long i = (long)x; return (x < 0 && (float)i != x) ? (float)(i - 1) : (float)i; }
+float sqrtf(float x) { float r; __asm__("fsqrt" : "=t"(r) : "0"(x)); return r; }
+/* The x87 reduces the argument itself; angles here are bounded well inside
+   what it will accept, so there is nothing to do beforehand. */
+float sinf(float x) { float r; __asm__("fsin" : "=t"(r) : "0"(x)); return r; }
+float cosf(float x) { float r; __asm__("fcos" : "=t"(r) : "0"(x)); return r; }
+float fmodf(float x, float y)
+{
+    float q;
+    if (y == 0 || !isfinite(x) || !isfinite(y)) return 0;
+    q = x / y;
+    if (q > 2147483000.0f || q < -2147483000.0f) return 0;
+    q = (float)(long)q;                 /* toward zero, as fmod truncates */
+    return x - q * y;
+}
 double pow(double x, double y)
 {
     /* x^y = 2^(y*log2(x)) with the x87 */

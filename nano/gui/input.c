@@ -416,16 +416,23 @@ static const char shifted[128] = {
     'B','N','M','<','>','?', 0, '*', 0, ' ',
 };
 
+/* Which keys are down now.  Events carry presses only, which suits a
+   desktop; anything driven by a key being held - walking, in a game - needs
+   the state as well, so it is kept here where the break codes arrive. */
+unsigned char input_key_down[128];
+
 static void key_byte(uint8_t sc)
 {
     int ch = 0;
     if (sc == 0xE0) { e0 = 1; return; }
     if (sc & 0x80) {
         sc &= 0x7F;
+        if (sc < 128) input_key_down[sc] = 0;
         if (sc == 0x2A || sc == 0x36) shift_down = 0;
         e0 = 0;
         return;
     }
+    if (sc < 128) input_key_down[sc] = 1;
     if (sc == 0x2A || sc == 0x36) { shift_down = 1; e0 = 0; return; }
     if (!e0 && sc < 128)
         ch = (shift_down ? shifted : plain)[sc];
