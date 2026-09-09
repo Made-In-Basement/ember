@@ -1050,8 +1050,15 @@ msg_io_tc:      db "SB: the time constant        ", 0
 msg_io_auto:    db "SB: keeps playing by itself  ", 0
 
 ; ---- what the card remembers ------------------------------------------------
-; Everything from here to io_state_end is cleared between programs, so each
-; run of a game meets a card that has just been switched on.
+; Everything from io_state to io_state_end is cleared between programs, so
+; each run of a game meets a card that has just been switched on.
+;
+; The eight bytes in front of it are there to be searched for.  A program
+; that hangs never reaches io_report, and the counters are the only thing
+; that says what it was doing; tools/sbpeek.py finds this in a memory dump
+; and reads them out.  Eight bytes is a small price for being able to ask a
+; hung machine what happened.
+io_probe:       db "SBCARD!!"
 io_state:
 io_writes:      dd 0                    ; counted so a test can see them arrive
 io_reads:       dd 0
