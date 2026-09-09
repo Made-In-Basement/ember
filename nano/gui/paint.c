@@ -388,7 +388,12 @@ static int paint_event(struct window *w, struct event *e)
             dirty_x0 = dirty_y0 = 1 << 30;
             dirty_x1 = dirty_y1 = -(1 << 30);
             mark(last_x, last_y, 0, 1, 0);
-            shell_repaint(w->x + cx0 + dirty_x0, w->y + cy0 + dirty_y0, dirty_x1 - dirty_x0, dirty_y1 - dirty_y0);
+            /* Only if the mark touched something: the empty box is a pair of
+               sentinels, and handing those to shell_repaint overflows into a
+               nonsense rectangle that then becomes the clip. */
+            if (dirty_x1 > dirty_x0)
+                shell_repaint(w->x + cx0 + dirty_x0, w->y + cy0 + dirty_y0,
+                              dirty_x1 - dirty_x0, dirty_y1 - dirty_y0);
             return 0;                                            /* the repaint is asked for above */
         }
         return 1;
