@@ -14,6 +14,7 @@
 #include <nanolibc.h>
 #include "nano.h"
 #include "input.h"
+#include "touch.h"
 #include "platform.h"
 #include "render.h"
 
@@ -104,6 +105,7 @@ static int poll(void *user, vg_input *in, float *seconds)
     int i;
     (void)user;
 
+    touch_poll();                                /* the pad, over I2C */
     /* drain the queue so the mouse and keyboard keep flowing */
     while (next_event(&e)) { }
 
@@ -220,6 +222,11 @@ int main(int argc, char **argv)
     sys_logf("VOXEL: build %s", VOX_BUILD);
 
     clock_start();
+    /* This laptop's trackpad is not a mouse at all: it is a HID device on
+       the I2C bus, and the desktop drives it with touch_open and touch_poll
+       rather than through the mouse port.  Nothing arrives on IRQ12 because
+       nothing was ever sent there. */
+    touch_open();
     /* Listen rather than take charge.  Resetting the pointing device gets no
        answer on this machine - the desktop found the same and opens it
        passively too - so the firmware keeps driving it and we watch. */
@@ -253,6 +260,7 @@ int main(int argc, char **argv)
     rc = vg_run(&platform, seed);
 
     vox_render_close();
+    touch_close();
     input_close();
     sys_logf("VOXEL: left with %d", rc);
     return rc;

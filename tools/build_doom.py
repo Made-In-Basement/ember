@@ -330,7 +330,8 @@ def build_voxel():
                os.path.join(d, 'runner.c'),
                os.path.join(d, 'platform_ember.c'),
                os.path.join(d, 'render_gpu.c'),
-               os.path.join(ROOT, 'nano', 'gui', 'input.c')],
+               os.path.join(ROOT, 'nano', 'gui', 'input.c'),
+               os.path.join(ROOT, 'nano', 'gui', 'touch.c')],
               'VOXEL.N32',
               extra_inc=(d, os.path.join(d, 'include'), os.path.join(ROOT, 'nano', 'gui')))
 
