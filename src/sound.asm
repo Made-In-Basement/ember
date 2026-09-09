@@ -1412,6 +1412,30 @@ hda_play_start:
         popad
         ret
 
+; -----------------------------------------------------------------------------
+; pcm_silence: fill the whole ring with nothing.
+;   The controller loops that ring for as long as it is running, so whatever
+;   is left in it when a sound ends plays on, quietly and forever, until
+;   something else is put there.  Stopping the stream ought to settle it, but
+;   a stream that does not quite stop then plays the tail of the last sound
+;   round and round.  Silence in the buffer settles it either way.
+; -----------------------------------------------------------------------------
+pcm_silence:
+        pushad
+        push    es
+        cmp     word [pcm_seg], 0
+        je      .none
+        call    enter_unreal
+        mov     es, [pcm_seg]
+        xor     di, di
+        xor     ax, ax
+        mov     cx, PCM_HALF                    ; both halves, in words
+        rep     stosw
+        wbinvd
+.none:  pop     es
+        popad
+        ret
+
 hda_play_stop:
         pushad
         mov     ebx, [sd_base]
@@ -1522,6 +1546,7 @@ snd_stream_stop_quiet:
         cmp     byte [stream_active], 0
         je      .done
         pushad
+        call    pcm_silence                     ; before it stops, not after
         call    enter_unreal
         call    hda_play_stop
         call    pcm_release                     ; and the memory back
@@ -1813,7 +1838,8 @@ play_wav:
         je      .stop
 .sleep: hlt
         jmp     .loop
-.stop:  call    hda_play_stop
+.stop:  call    pcm_silence                     ; nothing left looping
+        call    hda_play_stop
         call    pcm_release
         call    spk_bridge_resume               ; and give it back
         pop     es

@@ -2080,10 +2080,27 @@ build_full_path:
 .done:  popa
         ret
 
+; blaster_wanted: is there a card for a program to find?  A game reads
+;   BLASTER out of its environment and believes it, so the variable is there
+;   only while the monitor that answers for the card is loaded.  CF=1: no.
+blaster_wanted:
+        push    si
+        push    bx
+        mov     si, name_sb
+        call    mod_find_name
+        pop     bx
+        pop     si
+        ret
+
 ; build_environment: master environment + program path -> exec_env_seg
 build_environment:
         pusha
         push    es
+        mov     byte [env_blaster_on], 0
+        call    blaster_wanted
+        jc      .no_card
+        mov     byte [env_blaster_on], 1
+.no_card:
         ; length: master env (through the double NUL) + 2 + path + NUL
         mov     si, master_env
         xor     cx, cx
@@ -2098,6 +2115,10 @@ build_environment:
 .len_done:
         inc     cx                              ; second NUL
         add     cx, 2                           ; count word
+        cmp     byte [env_blaster_on], 0
+        je      .no_blaster
+        add     cx, env_blaster_end - env_blaster
+.no_blaster:
         mov     di, exec_full
 .plen:  cmp     byte [di], 0
         je      .plen_done
@@ -2121,6 +2142,18 @@ build_environment:
         jne     .copy
         cmp     byte [si], 0
         jne     .copy
+        cmp     byte [env_blaster_on], 0
+        je      .no_blaster2
+        push    si
+        mov     si, env_blaster
+.blaster:
+        lodsb
+        stosb
+        or      al, al
+        jne     .blaster
+        pop     si
+.no_blaster2:
+        xor     al, al
         stosb                                   ; second NUL
         mov     ax, 1
         stosw
@@ -2717,6 +2750,13 @@ exec_size:      dd 0
 exec_image_size: dd 0
                 dw 0                            ; first MCB segment (for 52h)
 sysvars:        times 32 db 0
+env_blaster_on: db 0
+name_sb:        db "SB      "
+; What a game's setup reads to find the card: base 220h, interrupt 5,
+; transfer channel 1, and a type of 3 - a Sound Blaster Pro, which is what
+; the DSP here says it is.
+env_blaster:    db "BLASTER=A220 I5 D1 T3", 0
+env_blaster_end:
 master_env:     db "PATH=C:\", 0
                 db "COMSPEC=C:\COMMAND.COM", 0
                 db "PROMPT=$P$G", 0

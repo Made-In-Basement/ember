@@ -115,9 +115,13 @@ EFL_IOPL3       equ 0x00003000
 V86_FLAGS       equ EFL_VM | EFL_IF | 2
 EFL_OF          equ 0x00000800
 EFL_NT          equ 0x00004000
-; the bits a program may set for itself: carry, parity, adjust, zero, sign,
-; trap, interrupt, direction and overflow
-EFL_PROGRAM     equ 0x00000DD5
+; The bits a program may set for itself, and the whole point of the list is
+; that it be right: carry (0), parity (2), adjust (4), zero (6), sign (7),
+; trap (8), interrupt (9), direction (10) and overflow (11).  With bit 9
+; missing out of this, every POPF and every IRET switched interrupts off
+; again, so the first one to arrive was the last: the clock a program keeps
+; time by stopped, and the program with it.
+EFL_PROGRAM     equ 0x00000FD5
 
 VEC_STUB_SIZE   equ 12
 %define IO_DEFAULT32 0                  ; an 8086 program's words are 16 bits
@@ -298,6 +302,7 @@ build_tss:
         pop     es
         call    io_trap_setup
         call    io_trap_pic
+        call    io_trap_speaker
         ret
 
 ; =============================================================================
@@ -519,11 +524,32 @@ v86_dispatch:
         je      .iret
         cmp     al, 0xF4                        ; HLT: a program waiting for a
         je      .step                           ;  tick, which comes anyway
+        cmp     al, 0x0F
+        je      .two_byte
         call    io_emulate                      ; a port, then
         jc      near program_fault
         cmp     byte [io_leave], 0
         jne     near back_to_real
         ret
+
+; ---- a program that means to run the processor itself -----------------------
+;  Loading a descriptor table or a control register is how a program leaves
+;  real mode behind, and nothing in virtual-8086 mode can stand in for that.
+;  So the monitor stands down instead: back to real mode, resuming *at* the
+;  instruction rather than after it, and the program has the machine.  It
+;  gets no card that way, but it runs, which matters more - and it means a
+;  32-bit program of ours is safe even where the kernel does not say so.
+.two_byte:
+        mov     al, [gs:esi + ebx]              ; the byte after 0Fh
+        cmp     al, 0x01                        ; LGDT, LIDT, LMSW and friends
+        je      .stand_down
+        cmp     al, 0x20                        ; MOV r32, CRn
+        je      .stand_down
+        cmp     al, 0x22                        ; MOV CRn, r32
+        je      .stand_down
+        jmp     near program_fault
+.stand_down:
+        jmp     near back_to_real               ; EIP left where it is
 
 ; ---- past whatever it was ---------------------------------------------------
 .step:  movzx   eax, bl

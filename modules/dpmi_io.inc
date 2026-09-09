@@ -25,6 +25,11 @@ IO_SB_BASE      equ 0x220               ; the card: 220h through 22Fh
 IO_SB_TOP       equ 0x22F
 IO_ESCAPE       equ 0x2FF               ; not a port: how sb.asm leaves V86
 IO_PIC          equ 0x20                ; the interrupt controller, and its mask
+IO_PIT2         equ 0x42                ; the timer channel the speaker is on
+IO_PITCMD       equ 0x43                ; ...and the command register beside it
+IO_GATE         equ 0x61                ; the gate that lets it through
+SPK_AMPL        equ 6000                ; how loud a square wave is here
+PIT_HZ          equ 1193182
 
 [BITS 16]
 ; -----------------------------------------------------------------------------
@@ -98,6 +103,24 @@ io_trap_setup:
 ;   knowing what the program has unmasked and swallowing the end-of-interrupt
 ;   the program sends for an interrupt no chip ever raised.
 ; -----------------------------------------------------------------------------
+; -----------------------------------------------------------------------------
+; io_trap_speaker: the timer channel the speaker hangs off, and its gate.
+;   Only the V86 monitor asks for this.  Watching them here is strictly better
+;   than the debug registers spkbrdg.asm uses: the fault arrives before the
+;   instruction rather than after, and the processor's four breakpoints stay
+;   free for whoever wants them.
+; -----------------------------------------------------------------------------
+io_trap_speaker:
+        push    dx
+        mov     dx, IO_PIT2
+        call    io_trap_port
+        inc     dx
+        call    io_trap_port
+        mov     dx, IO_GATE
+        call    io_trap_port
+        pop     dx
+        ret
+
 io_trap_pic:
         push    dx
         mov     dx, IO_PIC
@@ -159,6 +182,12 @@ io_dev_out:
         je      .pic_cmd
         cmp     dx, 0x21
         je      .pic_mask
+        cmp     dx, IO_PITCMD
+        je      .pit_cmd
+        cmp     dx, IO_PIT2
+        je      .pit_data
+        cmp     dx, IO_GATE
+        je      .gate
         cmp     dx, 0x226
         je      .dsp_reset
         cmp     dx, 0x22C
@@ -194,6 +223,64 @@ io_dev_out:
 .escape:
         mov     byte [io_leave], 1
         jmp     .done
+; ---- the speaker -----------------------------------------------------------
+; A program makes a note by programming timer channel 2 and opening the gate
+; in port 61h.  On this machine that signal goes nowhere: there is no beeper,
+; and the chipset does not feed the line into the audio codec.  So what the
+; timer was told is remembered here, and io_pump lays the square wave it
+; describes into the same stream the card's samples go to.
+;
+; Every write is made for real as well.  Channels 0 and 1 of that timer are
+; the machine's own clock and nothing here may take them away, and writing
+; channel 2 on a machine with no speaker attached to it costs nothing.
+.pit_cmd:
+        out     IO_PITCMD, al
+        mov     ebx, eax
+        and     bl, 0xC0
+        cmp     bl, 0x80                ; is it channel 2 being spoken to?
+        jne     .done
+        mov     ebx, eax
+        shr     bl, 4
+        and     bl, 3
+        mov     [pcs_access], bl        ; 1 = low byte, 2 = high, 3 = both
+        mov     ebx, eax
+        shr     bl, 1
+        and     bl, 7
+        mov     [pcs_mode], bl
+        mov     byte [pcs_toggle], 0
+        jmp     .done
+.pit_data:
+        out     IO_PIT2, al
+        cmp     byte [pcs_access], 3
+        jne     .pit_one
+        cmp     byte [pcs_toggle], 0
+        jne     .pit_high
+        mov     [pcs_reload], al
+        mov     byte [pcs_toggle], 1
+        jmp     .pit_tuned
+.pit_high:
+        mov     [pcs_reload + 1], al
+        mov     byte [pcs_toggle], 0
+        jmp     .pit_tuned
+.pit_one:
+        cmp     byte [pcs_access], 2
+        je      .pit_only_high
+        mov     [pcs_reload], al
+        mov     byte [pcs_reload + 1], 0
+        jmp     .pit_tuned
+.pit_only_high:
+        mov     [pcs_reload + 1], al
+        mov     byte [pcs_reload], 0
+.pit_tuned:
+        call    pcs_retune
+        jmp     .done
+.gate:
+        out     IO_GATE, al
+        and     al, 3                   ; the gate, and the speaker behind it
+        mov     [pcs_gate], al
+        call    pcs_retune
+        jmp     .done
+
 ; ---- the interrupt controller ----------------------------------------------
 ; The card's interrupt is one this host raises itself, so the controller never
 ; has it in service and the end-of-interrupt a program sends for it would
@@ -429,6 +516,53 @@ io_dev_out:
         ret
 
 ; -----------------------------------------------------------------------------
+; pcs_retune: what the timer has been told, turned into a step through a
+;   square wave.  Done once whenever something changes rather than per sample.
+;   Modes 2 and 3 (and 6 and 7, which are the same two again) make a tone; the
+;   others are one-shots a program uses for timing, not for sound.
+; -----------------------------------------------------------------------------
+pcs_retune:
+        push    eax
+        push    ebx
+        push    ecx
+        push    edx
+        mov     byte [pcs_on], 0
+        cmp     byte [pcs_gate], 3      ; the gate open and the speaker on
+        jne     .silent
+        mov     al, [pcs_mode]
+        and     al, 3
+        cmp     al, 2
+        je      .tone
+        cmp     al, 3
+        jne     .silent
+.tone:
+        movzx   ecx, word [pcs_reload]
+        or      ecx, ecx
+        jnz     .have_reload
+        mov     ecx, 65536              ; nought means the whole count
+.have_reload:
+        cmp     ecx, 20                 ; above 59 kHz: nothing anyone hears
+        jb      .silent
+        mov     eax, [au_rate]
+        or      eax, eax
+        jz      .silent
+        mul     ecx                     ; the rate times the count
+        or      edx, edx
+        jnz     .silent
+        mov     ecx, eax
+        mov     eax, (PIT_HZ << 16) & 0xFFFFFFFF
+        mov     edx, PIT_HZ >> 16
+        div     ecx                     ; the step, in sixteen-sixteen
+        mov     [pcs_step], eax
+        mov     byte [pcs_on], 1
+.silent:
+        pop     edx
+        pop     ecx
+        pop     ebx
+        pop     eax
+        ret
+
+; -----------------------------------------------------------------------------
 ; io_dev_in: DX = port, CL = width -> EAX = what the card would have said
 ; -----------------------------------------------------------------------------
 io_dev_in:
@@ -439,6 +573,10 @@ io_dev_in:
         je      .pic_mask               ; what the program last asked for
         cmp     dx, 0x20
         je      .pic_read               ; whatever the real one says
+        cmp     dx, IO_GATE
+        je      .gate_read              ; the refresh bit some programs time by
+        cmp     dx, IO_PIT2
+        je      .pit_read
         cmp     dx, 0x388
         je      .fm_status
         cmp     dx, 0x220
@@ -480,6 +618,16 @@ io_dev_in:
         ret
 .pic_read:
         in      al, 0x20
+        movzx   eax, al
+        pop     ebx
+        ret
+.gate_read:
+        in      al, IO_GATE
+        movzx   eax, al
+        pop     ebx
+        ret
+.pit_read:
+        in      al, IO_PIT2
         movzx   eax, al
         pop     ebx
         ret
@@ -560,12 +708,23 @@ io_pump:
         cmp     byte [au_have], 0
         je      .out
         inc     dword [au_ready]
-        cmp     byte [sb_playing], 0
-        je      .out
-        cmp     byte [sb_speaker], 0            ; a game that muted the card
-        je      .out
         pushad
-
+        ; What is making a sound?  Either, both, or - once something has -
+        ; neither, which still has to be written, because the ring plays on
+        ; whatever is in it and silence has to be put there.
+        mov     byte [pump_dsp], 0
+        cmp     byte [sb_playing], 0
+        je      .no_dsp
+        cmp     byte [sb_speaker], 0            ; a game that muted the card
+        je      .no_dsp
+        mov     byte [pump_dsp], 1
+.no_dsp:
+        mov     al, [pump_dsp]
+        or      al, [pcs_on]
+        jnz     .work
+        cmp     byte [au_primed], 0
+        je      .done                           ; nothing has ever played
+.work:
         ; how far the hardware has got, in frames
         mov     esi, [au_lpib]
         mov     eax, [gs:esi]
@@ -590,7 +749,6 @@ io_pump:
         mov     [au_wpos], edx
         mov     byte [au_primed], 1
 .placed:
-
         ; how far ahead we already are
         mov     eax, [au_wpos]
         sub     eax, ebx
@@ -601,15 +759,20 @@ io_pump:
         cmp     eax, AU_LEAD
         jae     .done                           ; enough for now
         mov     edi, AU_LEAD
-        sub     edi, eax                        ; frames to lay down
+        sub     eax, eax
+        mov     eax, AU_LEAD
+        sub     eax, edx
+        mov     edi, eax                        ; frames to lay down
         add     [au_frames], edi
 
         ; The step through the game's buffer, in sixteen-sixteen.  The card is
         ; told a time constant rather than a rate: 256 - 1000000/rate.
+        cmp     byte [pump_dsp], 0
+        je      .fill
         movzx   ebx, byte [sb_tc]
         mov     ecx, 256
         sub     ecx, ebx
-        jle     .done                           ; a constant of 256 says nothing
+        jle     .mute_dsp                       ; a constant of 256 says nothing
         mov     eax, 1000000
         xor     edx, edx
         div     ecx                             ; EAX = the rate it wants
@@ -617,11 +780,17 @@ io_pump:
         xor     edx, edx
         mov     ecx, [au_rate]
         or      ecx, ecx
-        jz      .done
+        jz      .mute_dsp
         div     ecx
         mov     [au_step], eax
+        jmp     .fill
+.mute_dsp:
+        mov     byte [pump_dsp], 0
 
 .fill:
+        xor     ebx, ebx                        ; the frame, mixed
+        cmp     byte [pump_dsp], 0
+        je      .no_sample
         ; the sample the game has got to
         mov     eax, [au_spos]
         shr     eax, 16
@@ -632,9 +801,10 @@ io_pump:
         cmp     byte [sb_auto], 0
         jne     .rewind
         mov     byte [sb_playing], 0            ; one pass, and it is over
+        mov     byte [pump_dsp], 0
         inc     dword [sb_blocks]
         mov     byte [sb_irq_owed], 1
-        jmp     .done
+        jmp     .no_sample                      ; the speaker plays on alone
 .rewind:
         mov     dword [au_spos], 0
         inc     dword [sb_blocks]
@@ -645,7 +815,30 @@ io_pump:
         movzx   eax, byte [gs:eax]
         sub     eax, 128                        ; the card's silence is 80h
         shl     eax, 8                          ; and this stream's is zero
-        and     eax, 0xFFFF
+        mov     ebx, eax
+.no_sample:
+        ; and the square wave the timer describes, added to it
+        cmp     byte [pcs_on], 0
+        je      .no_square
+        mov     eax, [pcs_phase]
+        add     eax, [pcs_step]
+        mov     [pcs_phase], eax
+        test    eax, 0x8000                     ; half a cycle either way
+        jz      .square_low
+        add     ebx, SPK_AMPL
+        jmp     .no_square
+.square_low:
+        sub     ebx, SPK_AMPL
+.no_square:
+        cmp     ebx, 32767
+        jle     .not_loud
+        mov     ebx, 32767
+.not_loud:
+        cmp     ebx, -32768
+        jge     .not_quiet
+        mov     ebx, -32768
+.not_quiet:
+        movzx   eax, bx
         mov     edx, eax
         shl     edx, 16
         or      eax, edx                        ; the same in both ears
@@ -662,9 +855,12 @@ io_pump:
 .no_wrap:
         mov     [au_wpos], ecx
 
+        cmp     byte [pump_dsp], 0
+        je      .next
         mov     eax, [au_spos]
         add     eax, [au_step]
         mov     [au_spos], eax
+.next:
         dec     edi
         jnz     .fill
 .done:
@@ -864,6 +1060,17 @@ sb_card_irq:    db 0                    ; ...and has not been acknowledged yet
 pic_isr:        db 0                    ; the card's interrupt is being served
 pic_mask:       db 0xFF                 ; what the program asked the controller
 io_leave:       db 0                    ; the monitor has been asked to stand down
+pump_dsp:       db 0                    ; the card has samples this time round
+pcs_on:         db 0                    ; the speaker has a note to make
+pcs_mode:       db 0                    ; what the timer channel was told
+pcs_access:     db 0
+pcs_toggle:     db 0
+pcs_gate:       db 0
+                align 2
+pcs_reload:     dw 0
+                align 4
+pcs_step:       dd 0                    ; through the wave, per frame, 16.16
+pcs_phase:      dd 0
                 align 4
 opl_regs:       times 512 db 0
 io_state_end:
