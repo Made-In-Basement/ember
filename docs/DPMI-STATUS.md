@@ -156,6 +156,14 @@ into zeros, not a wait for a key.
 - The frame layout of exception handlers and interrupt delivery (the
   self-test exercises both, and the kernel's handlers run).
 
+## Ruled out since
+
+- **The mode flags at 0400h.** The host answers `BX=0001`: 32-bit clients,
+  and a reflected interrupt drops to *real* mode rather than V86, which is
+  true of it and unusual among hosts. Claiming V86 instead (`BX=0003`)
+  changes nothing: DOS/4GW stops at the same place. Whatever tells its
+  loader it may use the raw-mode `INT FCh` services, it is not this.
+
 ## What to try next
 
 1. How does the DOS/16M kernel expect `INT FCh` to reach it in DPMI mode?
