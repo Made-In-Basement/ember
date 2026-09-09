@@ -347,6 +347,19 @@ io_dev_out:
         add     ebx, 256
 .store: mov     [opl_regs + ebx], al
         inc     dword [opl_writes]
+%ifdef HAVE_OPL
+        push    eax                             ; ...and to the chip itself
+        push    edx
+        push    ecx
+        movzx   eax, al
+        push    eax
+        push    ebx
+        call    OPL_WRITE
+        add     esp, 8
+        pop     ecx
+        pop     edx
+        pop     eax
+%endif
         cmp     bl, 4                   ; the timer control register
         jne     .done
         cmp     byte [opl_bank], 0
@@ -764,6 +777,9 @@ io_pump:
 .no_dsp:
         mov     al, [pump_dsp]
         or      al, [pcs_on]
+%ifdef HAVE_OPL
+        or      al, [OPL_LIVE]                  ; the music counts as well
+%endif
         jnz     .work
         cmp     byte [au_primed], 0
         je      .done                           ; nothing has ever played
@@ -862,6 +878,17 @@ io_pump:
         je      .no_sample
         mov     ebx, eax
 .no_sample:
+%ifdef HAVE_OPL
+        ; and the synthesiser, which is the music in nearly every game that
+        ; had any.  A frame at a time: eighteen voices of frequency modulation
+        ; dwarf the cost of the call, and it saves keeping a buffer here.
+        cmp     byte [OPL_LIVE], 0
+        je      .no_fm
+        call    OPL_RENDER1
+        movsx   eax, word [OPL_FRAME]
+        add     ebx, eax
+.no_fm:
+%endif
         ; and the square wave the timer describes, added to it
         cmp     byte [pcs_on], 0
         je      .no_square

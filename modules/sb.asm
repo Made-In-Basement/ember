@@ -50,9 +50,15 @@
 ; =============================================================================
 
 [BITS 16]
-%define MOD_ORG 0xA000
+; The high memory area is 64 KB and this module is now most of a synthesiser
+; as well as a monitor, so it takes the slot DPMI.MOD uses.  They are never
+; both wanted: one is for programs that go into protected mode themselves and
+; the other for programs that never heard of it.  Whichever is loaded first
+; has the high memory area and the other goes into conventional memory.
+%define MOD_ORG 0x1000
 [ORG MOD_ORG]
 %include "ember.inc"
+%include "oplsyms.inc"
 
         MODULE_HEADER "SB      ", sb_init, sb_unload, sb_event, 0
 
@@ -135,8 +141,6 @@ sb_init:
         movzx   eax, ax
         shl     eax, 4
         mov     [host_base], eax
-        add     eax, r0_stack_top
-        mov     [r0_top], eax
         mov     [rm_seg], cs
         mov     [rm_fault_seg], cs
         call    build_gdt
@@ -294,9 +298,13 @@ build_tss:
         mov     cx, TSS_SIZE / 2
         xor     ax, ax
         rep     stosw
-        mov     word [tss + 8], SEL_FLAT        ; SS0
-        mov     eax, [r0_top]
-        mov     [tss + 4], eax                  ; ESP0
+        ; SS0 is the module's own data selector, not the flat one.  Everything
+        ; the monitor touches by name - its stack, its tables, and the
+        ; synthesiser's whole world - is an offset in the module, and C code
+        ; wants SS and DS based the same way.  GS stays flat, for the
+        ; program's memory and the audio ring.
+        mov     word [tss + 8], SEL_DATA32      ; SS0
+        mov     dword [tss + 4], r0_stack_top   ; ESP0
         mov     word [tss + 102], TSS_IOPB
         mov     byte [tss + TSS_IOPB + IOPB_BYTES], 0xFF
         pop     es
@@ -343,12 +351,12 @@ v86_enter:
 pm_start:
         mov     ax, SEL_DATA32
         mov     ds, ax
+        mov     es, ax                          ; ES addresses the module too
+        mov     ss, ax
+        mov     esp, r0_stack_top
         mov     ax, SEL_FLAT
-        mov     es, ax
         mov     fs, ax
         mov     gs, ax
-        mov     ss, ax
-        mov     esp, [r0_top]
         push    dword 2                         ; NT above all: an IRET with
         popfd                                   ;  NT set is a task return
         ; The processor marks a task busy when it is loaded and never marks it
@@ -364,6 +372,17 @@ pm_start:
         or      eax, 0x22                       ; MP=1, NE=1
         mov     cr0, eax
         fninit
+%ifdef HAVE_OPL
+        ; the synthesiser, switched on at whatever rate the stream plays
+        mov     eax, [au_rate]
+        or      eax, eax
+        jnz     .have_rate
+        mov     eax, 44100
+.have_rate:
+        push    eax
+        call    OPL_RESET
+        add     esp, 4
+%endif
         mov     byte [in_v86], 1
         ; the frame an IRET into virtual-8086 mode wants
         movzx   eax, word [ent_gs]
@@ -434,8 +453,8 @@ v86_common:
         mov     ebp, esp                        ;  the segments it pushes
         mov     ax, SEL_DATA32
         mov     ds, ax
-        mov     ax, SEL_FLAT
-        mov     es, ax
+        mov     es, ax                          ; ES is the module's, so that
+        mov     ax, SEL_FLAT                    ;  a REP STOS by name works
         mov     fs, ax
         mov     gs, ax
         cld
@@ -1025,7 +1044,11 @@ io_settle:
 %include "io_decode.inc"
 
 ; =============================================================================
-section .data
+;  Everything below is data, but it stays in the one section: a flat binary
+;  laid out in the order it is written is what lets the synthesiser be placed
+;  at a known offset with TIMES, and a second section makes that offset
+;  something NASM will not work out until too late.
+; =============================================================================
                 align 8
 gdt:            times GDT_ENTRIES * 8 db 0
 gdtr:           dw GDT_ENTRIES * 8 - 1
@@ -1108,3 +1131,22 @@ rm_stack_top:
 r0_stack:       times 3072 db 0
 r0_stack_top:
 bss_end:
+
+; =============================================================================
+;  The synthesiser
+; -----------------------------------------------------------------------------
+;  nano/opl/opl3.c, compiled freestanding and linked at OPL_ORG - which is an
+;  offset in this module, and this module's selectors are based on this
+;  module, so every address in it is right wherever the kernel puts us.  That
+;  is the whole trick: no fixed physical address, no relocation, no second
+;  module to find.  tools/build_opl.py makes it and says where things are.
+;
+;  What follows the image is the memory it was linked to have and does not
+;  carry: the chip's state, which opl_reset fills in.
+; =============================================================================
+%ifdef HAVE_OPL
+                times (OPL_ORG - MOD_ORG) - ($ - $$) db 0
+opl_image:      incbin "opl.bin"
+                times (OPL_END - MOD_ORG) - ($ - $$) db 0
+opl_end:
+%endif

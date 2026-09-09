@@ -119,6 +119,19 @@ the desk is worth more than the microseconds.
 - **Real programs.** Alley Cat runs under the monitor, with sound. The
   desktop still runs. `DPMITEST` still passes every check and `SBTEST` still
   plays its tone through the DPMI host.
+- **The music.** `nano/opl/opl3.c` is a complete OPL3, written for Doom and
+  already known to play a tune. It is compiled freestanding by
+  `tools/build_opl.py`, linked flat at offset `6000h` (`nano/opl/opl.ld`), and
+  placed at that same offset inside `SB.MOD` by NASM. Every address in it is
+  therefore an offset in the module - and the monitor's own selectors are
+  based on the module, so the whole thing is right wherever the kernel puts
+  it. No fixed physical address, no relocation, no second module to find.
+  That is why the monitor's stack segment is `SEL_DATA32` rather than the
+  flat selector: C wants SS and DS based the same way, and everything the
+  monitor addresses by name is an offset in the module. `GS` stays flat, for
+  the program's memory and the audio ring. Register writes go to the chip as
+  well as the shadow, and `io_pump` renders a frame at a time and mixes it
+  in. `ADLIB.COM` plays four notes through it.
 - **Standing aside.** A program that loads a descriptor table or a control
   register means to run the processor itself, and nothing in virtual-8086
   mode can stand in for that. The monitor leaves instead - back to real mode,
@@ -182,25 +195,17 @@ monitor clears the busy bit itself before every `LTR`.
 
 ## What is next
 
-1. **The synthesiser.** Register writes to `0388h` are shadowed but nothing
-   renders them, so a game's music is silent even though its sound effects
-   play. `nano/opl/opl3.c` is a complete OPL3 and deliberately depends on
-   nothing but stdint, but it is C and the monitor is assembly in a resident
-   module. That is the open architectural question: either a C-capable
-   resident driver, or the monitor captures and something else plays.
-2. **The speaker.** Taking the HD Audio stream for a program stands the
-   speaker bridge down, so a PC-speaker game loses its sound while `SB.MOD`
-   is loaded. The right answer is to move the speaker into the monitor as
-   well - ports 42h, 43h and 61h trapped the same way, and its square wave
-   mixed into the same ring. That would also be better than the bridge is
-   now: a fault before the instruction rather than a debug trap after.
-3. **The BIOS in virtual-8086 mode.** Under QEMU the BIOS's disk services
+1. **How loud the music is.** The synthesiser's output peaks around 4000
+   where the digital side reaches 16384, so a game's music sits well under
+   its sound effects. Whether that wants a gain here or is right as it
+   stands is a question for a real game on real speakers.
+2. **The BIOS in virtual-8086 mode.** Under QEMU the BIOS's disk services
    work from inside V86 (`DIR` and loading a program both work). Some
    firmware does things in its INT 13h that V86 will not allow, especially
    for USB. If that bites on the laptop, the answer is a real-mode excursion
    around that one interrupt - out of V86, run it, back in - which is what
    the DPMI host already does for everything.
-4. **DOS/4GW.** Still stops after its banner (see `DPMI-STATUS.md`). That is
+3. **DOS/4GW.** Still stops after its banner (see `DPMI-STATUS.md`). That is
    the protected-mode path and it is now the less important of the two.
 
 ## What is ruled out

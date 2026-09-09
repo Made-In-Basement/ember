@@ -75,7 +75,9 @@ def find_qemu():
 def assemble(nasm_exe, src, out, include_dir=None):
     cmd = [nasm_exe, "-f", "bin", "-o", str(out), str(src)]
     if include_dir:
-        cmd += ["-i", str(include_dir) + os.sep]
+        for d in (include_dir if isinstance(include_dir, (list, tuple))
+                  else [include_dir]):
+            cmd += ["-i", str(d) + os.sep]
     print(f"  nasm {src.relative_to(ROOT)} -> {out.relative_to(ROOT)}")
     if subprocess.run(cmd).returncode:
         sys.exit(f"assembly failed: {src}")
@@ -452,10 +454,22 @@ def main():
         stem = src.stem.upper()
         out = BUILD / (stem[:-4] + ".EXE" if stem.endswith("_EXE") else stem + ".COM")
         programs.append((out.name, assemble(nasm_exe, src, out)))
+    # The synthesiser SB.MOD carries: C, compiled and linked flat, included
+    # into the module by NASM.  Without a compiler the module is built without
+    # it and a game's music stays silent, which is what it did before.
+    try:
+        sys.path.insert(0, str(ROOT / "tools"))
+        import build_opl
+        build_opl.build()
+    except SystemExit:
+        raise
+    except Exception as e:
+        print(f"  (no synthesiser: {e})")
     for src in sorted(MODULES.glob("*.asm")):
         # resident modules: foo.asm -> FOO.MOD, loaded with LOAD FOO
         out = BUILD / (src.stem.upper() + ".MOD")
-        programs.append((out.name, assemble(nasm_exe, src, out, MODULES)))
+        programs.append((out.name, assemble(nasm_exe, src, out,
+                                            [MODULES, BUILD])))
 
     kernel_sectors = (len(kernel) + SECTOR - 1) // SECTOR
     check_kernel_layout(kernel)
