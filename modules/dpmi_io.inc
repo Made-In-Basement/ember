@@ -237,6 +237,15 @@ io_dev_out:
         mov     byte [sb_speaker], 0
         jmp     .done
 .started:
+        ; the buffer is whatever the transfer controller was last told about
+        ; channel 1; the page register holds the bits the address cannot
+        movzx   ebx, byte [dma_page + 1]
+        shl     ebx, 16
+        movzx   eax, word [dma_addr + 2]
+        or      ebx, eax
+        mov     [au_src], ebx
+        mov     dword [au_spos], 0
+        mov     byte [au_primed], 0             ; place the write again
         mov     byte [sb_playing], 1
         inc     dword [sb_starts]
         jmp     .done
@@ -389,6 +398,137 @@ io_dev_in:
         pop     ebx
         ret
 
+; =============================================================================
+;  io_pump - the game's samples into the machine's own stream
+; -----------------------------------------------------------------------------
+;  A Sound Blaster is fed by the transfer controller a byte at a time at
+;  whatever rate its time constant asks for; this machine's audio hardware
+;  wants pairs of sixteen-bit samples at 44100 a second and never stops
+;  asking.  So the two are joined here: walk the game's buffer at its own
+;  rate, in sixteen-sixteen fixed point, and lay each byte down as many times
+;  as 44100 requires.
+;
+;  Nothing here waits.  It runs on the timer interrupt, before the client's
+;  own handler sees it, and fills only as far ahead of the hardware as it is
+;  allowed to be.
+; =============================================================================
+[BITS 32]
+AU_LEAD         equ 8192                        ; frames kept ahead of the DMA
+
+io_pump:
+        inc     dword [au_calls]
+        cmp     byte [au_have], 0
+        je      .out
+        inc     dword [au_ready]
+        cmp     byte [sb_playing], 0
+        je      .out
+        cmp     byte [sb_speaker], 0            ; a game that muted the card
+        je      .out
+        pushad
+
+        ; how far the hardware has got, in frames
+        mov     esi, [au_lpib]
+        mov     eax, [gs:esi]
+        shr     eax, 2
+        mov     ecx, [au_bytes]
+        shr     ecx, 2                          ; the ring, in frames
+        or      ecx, ecx
+        jz      .done
+        xor     edx, edx
+        div     ecx
+        mov     ebx, edx                        ; where it is playing
+
+        ; Where to write first.  In a ring, so many frames ahead and the same
+        ; number behind are the one number, so the first write has to be
+        ; placed deliberately rather than left at zero and reasoned about.
+        cmp     byte [au_primed], 0
+        jne     .placed
+        mov     eax, ebx
+        add     eax, 1024                       ; just in front of the hardware
+        xor     edx, edx
+        div     ecx
+        mov     [au_wpos], edx
+        mov     byte [au_primed], 1
+.placed:
+
+        ; how far ahead we already are
+        mov     eax, [au_wpos]
+        sub     eax, ebx
+        add     eax, ecx
+        xor     edx, edx
+        div     ecx
+        mov     eax, edx                        ; frames in hand
+        cmp     eax, AU_LEAD
+        jae     .done                           ; enough for now
+        mov     edi, AU_LEAD
+        sub     edi, eax                        ; frames to lay down
+        add     [au_frames], edi
+
+        ; The step through the game's buffer, in sixteen-sixteen.  The card is
+        ; told a time constant rather than a rate: 256 - 1000000/rate.
+        movzx   ebx, byte [sb_tc]
+        mov     ecx, 256
+        sub     ecx, ebx
+        jle     .done                           ; a constant of 256 says nothing
+        mov     eax, 1000000
+        xor     edx, edx
+        div     ecx                             ; EAX = the rate it wants
+        shl     eax, 16
+        xor     edx, edx
+        mov     ecx, [au_rate]
+        or      ecx, ecx
+        jz      .done
+        div     ecx
+        mov     [au_step], eax
+
+.fill:
+        ; the sample the game has got to
+        mov     eax, [au_spos]
+        shr     eax, 16
+        movzx   ecx, word [sb_len]
+        inc     ecx                             ; the block's length
+        cmp     eax, ecx
+        jb      .have_sample
+        cmp     byte [sb_auto], 0
+        jne     .rewind
+        mov     byte [sb_playing], 0            ; one pass, and it is over
+        jmp     .done
+.rewind:
+        mov     dword [au_spos], 0
+        inc     dword [sb_blocks]
+        xor     eax, eax
+.have_sample:
+        add     eax, [au_src]
+        movzx   eax, byte [gs:eax]
+        sub     eax, 128                        ; the card's silence is 80h
+        shl     eax, 8                          ; and this stream's is zero
+        and     eax, 0xFFFF
+        mov     edx, eax
+        shl     edx, 16
+        or      eax, edx                        ; the same in both ears
+
+        mov     ecx, [au_wpos]
+        mov     esi, [au_ring]
+        mov     [gs:esi + ecx*4], eax
+        inc     ecx
+        mov     edx, [au_bytes]
+        shr     edx, 2
+        cmp     ecx, edx
+        jb      .no_wrap
+        xor     ecx, ecx
+.no_wrap:
+        mov     [au_wpos], ecx
+
+        mov     eax, [au_spos]
+        add     eax, [au_step]
+        mov     [au_spos], eax
+        dec     edi
+        jnz     .fill
+.done:
+        wbinvd                                  ; the controller reads memory
+        popad
+.out:   ret
+
 [BITS 16]
 ; -----------------------------------------------------------------------------
 ; io_report: what the card was told, once the client that told it has gone.
@@ -398,6 +538,35 @@ io_dev_in:
 ; io_say: one line, to the screen and to the log.  DS:SI text, EAX value.
 ;   The log is only written out at certain moments and a client leaving is
 ;   not one of them, so the screen is what a test can actually read.
+; -----------------------------------------------------------------------------
+; io_audio_open: take the HD Audio stream for as long as a client runs.
+;   Both ends of a client's life are real-mode moments, so the kernel's own
+;   call will do and no excursion is needed.  A client that makes no sound
+;   holds the stream and returns it unused, which costs nothing.
+; -----------------------------------------------------------------------------
+io_audio_open:
+        push    ax
+        push    dx
+        mov     byte [au_have], 0
+        mov     dx, au_info
+        mov     ah, 0xF0
+        int     0x21
+        jc      .none
+        mov     byte [au_have], 1
+.none:  pop     dx
+        pop     ax
+        ret
+
+io_audio_close:
+        push    ax
+        cmp     byte [au_have], 0
+        je      .none
+        mov     ah, 0xF1
+        int     0x21
+        mov     byte [au_have], 0
+.none:  pop     ax
+        ret
+
 io_say:
         push    si
         push    eax
@@ -432,8 +601,29 @@ io_report:
         mov     eax, [opl_writes]
         call    io_say
 .no_fm:
+        cmp     byte [au_have], 0
+        je      .no_audio
+        mov     si, msg_io_ring
+        mov     eax, [au_ring]
+        call    io_say
+        mov     si, msg_io_rate
+        mov     eax, [au_rate]
+        call    io_say
+.no_audio:
         cmp     dword [sb_starts], 0
         je      .none
+        mov     si, msg_io_calls
+        mov     eax, [au_calls]
+        call    io_say
+        mov     si, msg_io_ready
+        mov     eax, [au_ready]
+        call    io_say
+        mov     si, msg_io_frames
+        mov     eax, [au_frames]
+        call    io_say
+        mov     si, msg_io_blk
+        mov     eax, [sb_blocks]
+        call    io_say
         mov     si, msg_io_go
         mov     eax, [sb_starts]
         call    io_say
@@ -459,6 +649,12 @@ io_report:
         call    io_say
 .none:  ret
 
+msg_io_calls:   db "SB: the pump was asked       ", 0
+msg_io_ready:   db "SB: ...with a stream to fill ", 0
+msg_io_frames:  db "SB: frames it laid down      ", 0
+msg_io_blk:     db "SB: blocks played out        ", 0
+msg_io_ring:    db "SB: the audio ring at        ", 0
+msg_io_rate:    db "SB: the stream plays at      ", 0
 msg_io_w:       db "SB: writes to the card       ", 0
 msg_io_r:       db "SB: reads from it            ", 0
 msg_io_fm:      db "SB: writes to the synthesiser", 0
@@ -499,5 +695,23 @@ dma_addr:       times 4 dw 0
 dma_count:      times 4 dw 0
 dma_page:       times 4 db 0
 dma_mode:       times 4 db 0
+; what the kernel hands back: the ring, its size, where the hardware says it
+; has got to, and the rate it plays at
+au_have:        db 0
+                align 4
+au_info:
+au_ring:        dd 0
+au_bytes:       dd 0
+au_lpib:        dd 0
+au_rate:        dd 0
+au_wpos:        dd 0                    ; where we are writing, in frames
+au_spos:        dd 0                    ; the game's buffer, 16.16
+au_step:        dd 0
+au_src:         dd 0                    ; the buffer, as the bus sees it
+sb_blocks:      dd 0                    ; blocks played out
+au_calls:       dd 0                    ; times the pump was asked to run
+au_ready:       dd 0                    ; times it had a stream to fill
+au_frames:      dd 0                    ; frames it laid down
+au_primed:      db 0                    ; the write position has been placed
                 align 4
 opl_regs:       times 512 db 0

@@ -289,6 +289,11 @@ int_exit:
 ; =============================================================================
 hw_interrupt:
         movzx   eax, byte [ebp + F_VEC]
+        cmp     al, 8                           ; the timer: keep the sound fed
+        jne     .not_timer
+        call    io_pump
+        movzx   eax, byte [ebp + F_VEC]
+.not_timer:
         cmp     dword [pm_vectors + eax*8], 0
         jne     deliver_int
         ; reflect: registers do not matter to a hardware handler

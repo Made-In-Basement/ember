@@ -48,6 +48,23 @@ start:
         int     0x21
         jc      .no_buf
         mov     [buf_seg], ax
+        ; A square wave, so that whatever comes out of the speakers is
+        ; unmistakably ours and not a click.  Twenty samples high and twenty
+        ; low at about 11 kHz is a note near 275 Hz.
+        push    es
+        mov     es, ax
+        xor     di, di
+        mov     cx, 4096 / 40
+.tone:  mov     al, 0xC0
+        push    cx
+        mov     cx, 20
+        rep     stosb
+        mov     al, 0x40
+        mov     cx, 20
+        rep     stosb
+        pop     cx
+        loop    .tone
+        pop     es
 .no_buf:
         mov     bx, [host_paras]
         or      bx, bx
@@ -197,6 +214,15 @@ protected:
         out     dx, al
         mov     al, 0x1C                        ; and keep playing it
         out     dx, al
+
+        ; Give it time to be heard.  The host feeds the stream on the timer
+        ; interrupt, so a client that starts a sound and leaves at once has
+        ; started nothing anybody could hear.
+        mov     si, msg_waiting
+        call    puts
+        mov     ecx, 0x04000000
+.hold:  dec     ecx
+        jnz     .hold
 
         mov     si, msg_dma_at
         call    puts
@@ -374,6 +400,7 @@ msg_version:   db "  the version it claims   ", 0
 msg_fm:        db "  the synthesiser's timers ", 0
 msg_fm_tail:   db "  (C0h once both have run)", 13, 10, 0
 msg_dma:       db "  a transfer, programmed as a game would", 13, 10, 0
+msg_waiting:   db "  playing, for a moment", 13, 10, 0
 msg_dma_at:    db "  the buffer it was given ", 0
 msg_no_buf:    db "  no memory for a buffer", 13, 10, 0
 msg_bye:       db 13, 10, "Leaving; EMBER.LOG has what the card was told.", 13, 10, 0
