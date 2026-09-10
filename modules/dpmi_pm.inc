@@ -154,6 +154,14 @@ pm_first_entry:
         add     esp, 4
         OPL_LEAVE
 %endif
+        ; How far ahead of the hardware to fill.  The pump here runs on the
+        ; client's own timer, and a DOS/4GW game nearly always sets that fast
+        ; - Doom asks for 140 a second, Hexen for 35 - so it starts at the
+        ; short lead and music is made close to the moment it is heard.  A
+        ; client that leaves the timer where the BIOS had it cannot keep that
+        ; up; it does not have to, because falling behind lengthens the lead
+        ; until it can.
+        mov     dword [au_lead], AU_LEAD_FAST
         call    io_watch_arm                    ; the card's ports
         ; ---- the client's real-mode segments as descriptors ----
         movzx   eax, word [ent_cs]
