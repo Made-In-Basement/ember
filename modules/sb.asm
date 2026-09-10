@@ -1150,7 +1150,8 @@ rtc_start:
         and     al, ~(1 << RTC_IRQ_SLAVE)
         out     0xA1, al
         mov     byte [rtc_on], 1
-        mov     dword [au_lead], AU_LEAD_FAST   ; four milliseconds of clock
+        mov     dword [au_lead_start], AU_LEAD_FAST ; four ms of clock
+        mov     dword [au_lead], AU_LEAD_FAST
         pop     ax
         ret
 
@@ -1159,6 +1160,7 @@ rtc_stop:
         cmp     byte [rtc_on], 0
         je      .done
         mov     byte [rtc_on], 0
+        mov     dword [au_lead_start], AU_LEAD_SLOW
         mov     dword [au_lead], AU_LEAD_SLOW
         cli
         mov     al, 0x8B                        ; the periodic bit, back as found

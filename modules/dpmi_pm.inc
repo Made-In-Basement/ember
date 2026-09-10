@@ -161,6 +161,7 @@ pm_first_entry:
         ; client that leaves the timer where the BIOS had it cannot keep that
         ; up; it does not have to, because falling behind lengthens the lead
         ; until it can.
+        mov     dword [au_lead_start], AU_LEAD_FAST
         mov     dword [au_lead], AU_LEAD_FAST
         call    io_watch_arm                    ; the card's ports
         ; ---- the client's real-mode segments as descriptors ----
@@ -542,16 +543,19 @@ card_interrupt:
         cmp     byte [sb_irq_owed], 0
         je      .none
         cmp     dword [pm_vectors + CARD_VECTOR * 8], 0
-        je      .none                           ; nobody is listening for it
+        je      .nobody                         ; nobody is listening for it
         push    eax
         in      al, 0x21                        ; and the line is not masked
         test    al, 1 << CARD_IRQ
         pop     eax
-        jnz     .none
+        jnz     .nobody
         mov     byte [sb_irq_owed], 0
-        inc     dword [gs:IRQCOUNT_LIN + 24]
+        inc     dword [dr_card_irqs]
         mov     eax, CARD_VECTOR
         call    push_int
+        ret
+.nobody:
+        inc     dword [card_irq_late]
 .none:  ret
 
 ; =============================================================================
@@ -1101,6 +1105,7 @@ io_watch_arm:
 ; -----------------------------------------------------------------------------
 dr_io_trap:
         push    eax
+        inc     dword [dr_traps]
 %ifdef DRLOG
         inc     dword [gs:DRLOG_LIN]
 %endif
@@ -1111,6 +1116,7 @@ dr_io_trap:
         stc
         ret
 .ours:
+        inc     dword [dr_ours]
 %ifdef DRLOG
         inc     dword [gs:DRLOG_LIN + 4]
 %endif
@@ -1222,6 +1228,7 @@ dr_io_trap:
         clc
         ret
 .unknown:
+        inc     dword [dr_odd]
 %ifdef DRLOG
         inc     dword [gs:DRLOG_LIN + 8]
 %endif

@@ -154,7 +154,8 @@ io_card_reset:
         rep     stosw
         mov     byte [opl_timer_flags], 0xC0
         mov     byte [pic_mask], 0xFF
-        mov     dword [au_lead], AU_LEAD_SLOW   ; nought would fill nothing
+        mov     eax, [au_lead_start]            ; nought would fill nothing
+        mov     [au_lead], eax
         pop     es
         pop     di
         pop     cx
@@ -1273,7 +1274,31 @@ io_report:
         movzx   eax, byte [sb_auto]
         mov     si, msg_io_auto
         call    io_say
-.none:  ret
+.none:
+        cmp     dword [dr_traps], 0
+        je      .no_watch
+        mov     si, msg_io_dr
+        mov     eax, [dr_traps]
+        call    io_say
+        mov     si, msg_io_drc
+        mov     eax, [dr_ours]
+        call    io_say
+        cmp     dword [dr_odd], 0
+        je      .no_odd
+        mov     si, msg_io_dro
+        mov     eax, [dr_odd]
+        call    io_say
+.no_odd:
+        mov     si, msg_io_irq
+        mov     eax, [dr_card_irqs]
+        call    io_say
+        cmp     dword [card_irq_late], 0
+        je      .no_watch
+        mov     si, msg_io_irql
+        mov     eax, [card_irq_late]
+        call    io_say
+.no_watch:
+        ret
 
 msg_io_calls:   db "SB: the pump was asked       ", 0
 msg_io_ready:   db "SB: ...with a stream to fill ", 0
@@ -1291,6 +1316,11 @@ msg_io_cnt:     db "SB: the controller's count   ", 0
 msg_io_len:     db "SB: the block the DSP wants  ", 0
 msg_io_tc:      db "SB: the time constant        ", 0
 msg_io_auto:    db "SB: keeps playing by itself  ", 0
+msg_io_dr:      db "SB: debug traps              ", 0
+msg_io_drc:     db "SB: ...on the card's ports   ", 0
+msg_io_dro:     db "SB: ...that made no sense    ", 0
+msg_io_irq:     db "SB: the card's interrupt, out", 0
+msg_io_irql:    db "SB: ...owed, nobody listening", 0
 
 ; ---- what the card remembers ------------------------------------------------
 ; Everything from io_state to io_state_end is cleared between programs, so
@@ -1301,10 +1331,23 @@ msg_io_auto:    db "SB: keeps playing by itself  ", 0
 ; that says what it was doing; tools/sbpeek.py finds this in a memory dump
 ; and reads them out.  Eight bytes is a small price for being able to ask a
 ; hung machine what happened.
+; The lead a card starts a program with.  Not part of what is cleared: it
+; says what clock the pump has, which is a property of the monitor and not
+; of the program that just ran.
+au_lead_start:  dd AU_LEAD_SLOW
 io_probe:       db "SBCARD!!"
 io_state:
 io_writes:      dd 0                    ; counted so a test can see them arrive
 io_reads:       dd 0
+; The debug registers, which is how a client at privilege level three has its
+; ports watched.  On a machine that cannot be stopped and dumped, these three
+; numbers are the difference between "the watch never fired" and "it fired and
+; the card said the wrong thing", and there is no other way to tell.
+dr_traps:       dd 0                    ; debug exceptions, all told
+dr_ours:        dd 0                    ; ...that were one of the card's ports
+dr_odd:         dd 0                    ; ...that could not be read back
+dr_card_irqs:   dd 0                    ; the card's interrupt, given out
+card_irq_late:  dd 0                    ; ...owed, and nobody was listening
 opl_writes:     dd 0
 opl_index:      db 0
 opl_bank:       db 0
