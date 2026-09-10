@@ -150,6 +150,14 @@ EFL_NT          equ 0x00004000
 ; again, so the first one to arrive was the last: the clock a program keeps
 ; time by stopped, and the program with it.
 EFL_PROGRAM     equ 0x00000FD5
+; And the ones it may believe it has set without them being true.  A program
+; finds out it is on a 386 rather than a 286 by setting the privilege level
+; and nested-task bits, reading them back, and seeing whether they stuck: on
+; a 286 they never do.  They must not really stick here - the monitor needs
+; the privilege level at nought for anything to trap at all - so they are
+; remembered instead and handed back when the program asks.  Without that,
+; DOS/4GW decides the processor is a 286 and refuses to run.
+EFL_VIRTUAL     equ 0x00007000                  ; the two IOPL bits and NT
 
 VEC_STUB_SIZE   equ 12
 %define IO_DEFAULT32 0                  ; an 8086 program's words are 16 bits
@@ -406,6 +414,7 @@ pm_start:
         call    OPL_RESET
         add     esp, 4
 %endif
+        mov     word [v_flags], 0
         mov     byte [in_v86], 1
         ; the frame an IRET into virtual-8086 mode wants
         movzx   eax, word [ent_gs]
@@ -615,7 +624,9 @@ v86_dispatch:
 ; ---- the flags, as the program is allowed to see and set them ---------------
 .pushf:
         mov     eax, [ebp + F_EFL]
-        and     eax, ~(EFL_VM | EFL_NT)         ; nothing about where it is
+        and     eax, EFL_PROGRAM                ; nothing about where it is
+        or      eax, 2
+        or      ax, [v_flags]                   ; ...and what it thinks it set
         cmp     byte [op66], 0
         je      .pushf16
         push    eax
@@ -632,6 +643,9 @@ v86_dispatch:
         je      .popf_have
         call    v86_pop                         ; the half nobody reads
 .popf_have:
+        mov     eax, ecx
+        and     ax, EFL_VIRTUAL                 ; believed, not obeyed
+        mov     [v_flags], ax
         mov     eax, ecx
         and     eax, EFL_PROGRAM
         or      eax, EFL_VM | 2
@@ -677,6 +691,10 @@ v86_dispatch:
 .iret_set:
         mov     [ebp + F_EIP], ecx
         mov     [ebp + F_CS], edx
+        push    eax
+        and     ax, EFL_VIRTUAL                 ; believed, not obeyed
+        mov     [v_flags], ax
+        pop     eax
         and     eax, EFL_PROGRAM
         or      eax, EFL_VM | 2
         mov     [ebp + F_EFL], eax
@@ -1241,6 +1259,8 @@ r0_top:         dd 0
 in_v86:         db 0
 irq_line:       db 0
 op66:           db 0                            ; an operand-size prefix seen
+                align 2
+v_flags:        dw 0                            ; flags a program believes in
 isr_age:        db 0
 fault_kind:     db 0
                 align 4
