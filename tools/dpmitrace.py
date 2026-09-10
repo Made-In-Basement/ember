@@ -21,6 +21,13 @@ def main():
         target = f"INT {vec:02X}h" if kind == 0 else what
         print(f"  {target:10} AX={ax_in:04X} BX={bx_in:04X} -> AX={ax_out:04X} "
               f"{'CF' if fl & 1 else '  '} flags={fl:04X}")
+    base = 0x7E00 - 0x7C00
+    if len(d) > base + 4:
+        m = struct.unpack_from("<I", d, base)[0]
+        print(f"exceptions the client took: {m}")
+        for k in range(min(m, 30)):
+            vec, err, cs, eip = struct.unpack_from("<4I", d, base + 16 + k * 16)
+            print(f"  exception {vec:2} error {err:04X} at {cs:04X}:{eip:08X}")
     r = open(sys.argv[2], "rb").read() if len(sys.argv) > 2 else b""
     total = struct.unpack_from("<I", r, 0)[0] if r else 0
     print(f"INT 31h calls: {total}; the last {min(total, 500)}:")

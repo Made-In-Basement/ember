@@ -1,4 +1,4 @@
-# DPMI host: where it stands (2026-09-07)
+# DPMI host: where it stands (2026-09-09)
 
 `DPMI.MOD` (`modules/dpmi.asm`, `dpmi_pm.inc`, `dpmi_31.inc`) is a DPMI 0.9
 host for 32-bit clients. It is **off by default**: `LOAD DPMI` advertises it
@@ -163,6 +163,56 @@ into zeros, not a wait for a key.
   true of it and unusual among hosts. Claiming V86 instead (`BX=0003`)
   changes nothing: DOS/4GW stops at the same place. Whatever tells its
   loader it may use the raw-mode `INT FCh` services, it is not this.
+
+## It runs Doom (2026-09-09)
+
+DOS/4GW gets all the way into the game now: the attract-mode demo plays
+under this host, with the full heads-up display and a working timer. Two
+things were wrong, and neither was the INT FCh everything pointed at.
+
+**A client's BIOS calls were going to its exception handlers.** Below 32, an
+interrupt a client *makes* and an exception it *takes* are the same thing at
+the gate: the processor delivers both through the one vector and says
+nothing about which. INT 10h is the video BIOS and vector 16. INT 11h is the
+equipment list and vector 17. This host asked whether the client had an
+exception handler before asking whether it had an interrupt handler, and
+DOS/4GW installs exception handlers for 06h-11h - so every video call it
+made went to its own #MF handler, whose first instruction is `int FCh` into
+a DOS/16M kernel API that nothing under DPMI installs. All of the INT FCh
+archaeology below is downstream of that. `was_software_int` reads the two
+bytes in front of the saved EIP: an INT leaves `CD nn` behind it, a fault
+leaves EIP on the instruction that faulted.
+
+Vector 17 also stopped being treated as arriving with an error code. It is
+alignment check, which needs CR0.AM and EFLAGS.AC and so never happens,
+while INT 11h lands on the same vector constantly - and assuming an error
+code there puts the whole frame four bytes out.
+
+**And the client could not get its interrupts back.** After that fix
+DOS/4GW loaded its WAD and then sat spinning with five hardware interrupts
+in a hundred seconds. The controller was ready - `irr=11`, IRQ 0 unmasked,
+nothing in service - so the processor simply was not taking them: IF was
+clear and stayed clear.
+
+At CPL 3 with IOPL 0, CLI and STI fault, so a host can emulate them. POPF
+and IRET do not: they **silently ignore** the interrupt flag, with no fault
+for a host to step in on. A client that says PUSHF, CLI, ... POPF never
+gets its interrupts back, and DOS/4GW says exactly that.
+
+The two things this host wants are exclusive on this processor:
+
+    the permission map is consulted only when CPL is *greater* than IOPL
+    POPF and IRET honour IF only when CPL is *not greater* than IOPL
+
+So the client runs at IOPL 3 by default and DOS/4GW works; `LOAD DPMI TRAP`
+runs it at nought instead, which is how `SBTEST` is run and the only way to
+watch a protected-mode client's ports. Real-mode games need neither choice:
+virtual-8086 mode consults the map whatever the privilege level, which is
+why `SB.MOD` has both at once.
+
+**What that leaves open:** a DOS/4GW game runs but has no sound, because the
+host cannot both watch its ports and let it keep its interrupts. That is now
+the whole of what stands between Hexen and a Sound Blaster.
 
 ## What the trace says (2026-09-09)
 

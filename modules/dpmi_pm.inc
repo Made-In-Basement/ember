@@ -41,6 +41,23 @@ EFL_IF          equ 0x0200
 EFL_NT          equ 0x4000
 EFL_IOPL        equ 0x3000
 
+; What privilege level the client runs its I/O at, and the one real choice
+; this host has to make.  The two things wanted here are exclusive on this
+; processor, and not by a little:
+;
+;   The permission map in the task state segment is consulted only when CPL
+;   is *greater* than IOPL.  So trapping a port needs IOPL below 3.
+;
+;   POPF and IRET only honour the interrupt flag when CPL is *not greater*
+;   than IOPL.  Below 3 they ignore it silently - no fault, so a host cannot
+;   step in - and a client that says PUSHF, CLI, ... POPF never gets its
+;   interrupts back.  DOS/4GW does exactly that, and stops dead.
+;
+; So: 3 by default, because a game that runs beats a card in a game that
+; does not.  LOAD DPMI TRAP asks for nought instead, which is how SBTEST is
+; run.  Real-mode games need neither: virtual-8086 mode consults the map
+; whatever the privilege level, which is why SB.MOD can have both.
+
 ; error codes
 DPMI_E_UNSUPPORTED equ 0x8001
 DPMI_E_NODESC   equ 0x8011
@@ -89,6 +106,13 @@ pm_first_entry:
         mov     [ldt_lin], eax
         mov     eax, [xarea]
         mov     dword [gs:eax + CALLTRACE_OFF], 0
+        mov     dword [gs:EXCTRACE_LIN], 0      ; and no exceptions yet
+        mov     dword [gs:IRQCOUNT_LIN], 0
+        mov     dword [gs:IRQCOUNT_LIN + 4], 0
+        mov     dword [gs:IRQCOUNT_LIN + 8], 0
+        mov     dword [gs:IRQCOUNT_LIN + 12], 0
+        mov     dword [gs:IRQCOUNT_LIN + 16], 0
+        mov     dword [gs:IRQCOUNT_LIN + 20], 0
         ; the numeric coprocessor, for clients that use it
         mov     eax, cr0
         and     eax, ~0x0C                      ; EM=0, TS=0
@@ -145,6 +169,7 @@ pm_first_entry:
         movzx   eax, word [ent_flags]
         or      eax, EFL_IF
         and     eax, ~(EFL_TF | EFL_NT | EFL_IOPL)
+        or      eax, [client_iopl]
         push    dword [cl_ss]                   ; SS
         movzx   ecx, word [ent_sp]
         push    ecx                             ; ESP
@@ -293,6 +318,7 @@ int_exit:
 ; hw_interrupt: the client's handler if it has one, else real mode's
 ; =============================================================================
 hw_interrupt:
+        inc     dword [gs:IRQCOUNT_LIN]
         movzx   eax, byte [ebp + F_VEC]
         cmp     al, 8                           ; the timer: keep the sound fed
         jne     .not_timer
@@ -300,7 +326,11 @@ hw_interrupt:
         movzx   eax, byte [ebp + F_VEC]
 .not_timer:
         cmp     dword [pm_vectors + eax*8], 0
-        jne     deliver_int
+        je      .to_real
+        inc     dword [gs:IRQCOUNT_LIN + 4]
+        jmp     deliver_int
+.to_real:
+        inc     dword [gs:IRQCOUNT_LIN + 8]
         ; reflect: registers do not matter to a hardware handler
         mov     [rm_vector], al
         mov     byte [rm_kind], 0
@@ -462,6 +492,31 @@ exception:
         call    gp_emulate                      ; CLI, STI, HLT and port traps
         jnc     int_exit                        ; handled
 .not_gp:
+        ; Every exception the client really takes, with where and why.  A
+        ; client that installs its own handlers swallows them silently and
+        ; what it does about them is then invisible - which is exactly how
+        ; the misrouted BIOS calls above stayed hidden for two sessions.
+        ; tools/dpmitrace.py reads these out of the trace page.
+        push    eax
+        push    ebx
+        mov     ebx, EXCTRACE_LIN
+        mov     eax, [gs:ebx]
+        cmp     eax, EXCTRACE_MAX
+        jae     .traced
+        inc     dword [gs:ebx]
+        shl     eax, 4
+        lea     ebx, [ebx + eax + 16]
+        movzx   eax, byte [ebp + F_VEC]
+        mov     [gs:ebx], eax
+        mov     eax, [ebp + F_ERR]
+        mov     [gs:ebx + 4], eax
+        mov     eax, [ebp + F_CS]
+        mov     [gs:ebx + 8], eax
+        mov     eax, [ebp + F_EIP]
+        mov     [gs:ebx + 12], eax
+.traced:
+        pop     ebx
+        pop     eax
         movzx   eax, byte [ebp + F_VEC]
         cmp     dword [exc_handlers + eax*8], 0
         jne     deliver_exc
@@ -604,6 +659,7 @@ ret_from_client:
         je      .from_cb
         jmp     sw_interrupt                    ; somebody's own INT F9h
 .from_int:
+        inc     dword [gs:IRQCOUNT_LIN + 20]
         ; the interrupted context sits at the client's ESP
         movzx   ecx, word [ebp + F_SS]
         mov     eax, [ebp + F_ESP]
@@ -617,6 +673,7 @@ ret_from_client:
         ; CF in the frame), with the interrupt flag as it was before
         mov     eax, [ebp + F_EFL]
         and     eax, ~(EFL_IF | EFL_TF | EFL_NT | EFL_IOPL)
+        or      eax, [client_iopl]
         mov     ecx, [gs:esi + 8]
         and     ecx, EFL_IF | EFL_TF
         or      eax, ecx
@@ -638,6 +695,7 @@ ret_from_client:
         mov     eax, [gs:esi + 12]
         or      eax, EFL_IF
         and     eax, ~(EFL_NT | EFL_IOPL)
+        or      eax, [client_iopl]
         mov     [ebp + F_EFL], eax
         mov     eax, [gs:esi + 16]
         mov     [ebp + F_ESP], eax
@@ -716,6 +774,7 @@ callback_enter:
         mov     [gs:edi + 12], eax              ; the callback number
         movzx   eax, word [cb_regs + RC_FLAGS]
         and     eax, ~(EFL_IF | EFL_TF | EFL_NT | EFL_IOPL)
+        or      eax, [client_iopl]
         mov     [gs:edi + 8], eax
         mov     dword [gs:edi + 4], SEL_UCODE32
         mov     dword [gs:edi + 0], ret_stub_cb
@@ -878,9 +937,11 @@ gp_emulate:
         call    io_emulate                      ; IN, OUT with a watched port
         jc      .real
         ret
-.cli:   and     dword [ebp + F_EFL], ~EFL_IF
+.cli:   inc     dword [gs:IRQCOUNT_LIN + 12]
+        and     dword [ebp + F_EFL], ~EFL_IF
         jmp     .skip1
-.sti:   or      dword [ebp + F_EFL], EFL_IF
+.sti:   inc     dword [gs:IRQCOUNT_LIN + 16]
+        or      dword [ebp + F_EFL], EFL_IF
 .skip1: inc     dword [ebp + F_EIP]
         clc
         ret

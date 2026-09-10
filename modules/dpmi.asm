@@ -90,6 +90,14 @@ RC_SS           equ 48
 RC_SIZE         equ 50
 
 TRACE_SEG       equ 0x07C0                      ; a page of real-mode excursions
+; Six counters in the twenty-eight bytes between the excursion ring (which
+; ends at 7DE4h) and the exception ring (which starts at 7E00h).  They were
+; at 7DF0h, which ran into the exception ring's own count.
+IRQCOUNT_LIN    equ 0x7DE4                      ; hardware interrupts: seen,
+                                                ;  given to the client, sent
+                                                ;  down to real mode
+EXCTRACE_LIN    equ 0x7E00                      ; ...and, past them, the
+EXCTRACE_MAX    equ 30                          ;  exceptions a client took
 EXCTRACE_LIN    equ 0x7E00                      ; ...and, in its second half,
 EXCTRACE_MAX    equ 30                          ;  the exceptions a client took
 TRACE_LIN       equ 0x7C00
@@ -127,6 +135,12 @@ DEF_STUB_SIZE   equ 8
 ; =============================================================================
 dpmi_init:
         SVC_TABLE_COPY
+        ; LOAD DPMI TRAP: run the client where its ports can be watched,
+        ; at the price of the interrupt flag.  See client_iopl.
+        call    wants_trapping
+        jc      .iopl_kept
+        mov     dword [client_iopl], 0
+.iopl_kept:
         mov     ax, 0x4300
         int     0x2F
         cmp     al, 0x80
@@ -158,13 +172,52 @@ dpmi_init:
         pop     es
         mov     si, msg_loaded
         SVC     SVC_PUTS
-        clc
+        cmp     dword [client_iopl], 0
+        jne     .said
+        mov     si, msg_trapping
+        SVC     SVC_PUTS
+.said:  clc
         retf
 .no_xms:
         mov     si, msg_no_xms
         SVC     SVC_PUTS
         stc
         retf
+
+; wants_trapping: CF=0 if the load line said TRAP.  ES:SI is what followed
+;   the module's name, spaces and all.
+wants_trapping:
+        push    ax
+        push    si
+.skip:  mov     al, [es:si]
+        cmp     al, ' '
+        jne     .word
+        inc     si
+        jmp     .skip
+.word:  mov     al, [es:si]
+        and     al, 0xDF                        ; upper case, roughly
+        cmp     al, 'T'
+        jne     .no
+        mov     al, [es:si+1]
+        and     al, 0xDF
+        cmp     al, 'R'
+        jne     .no
+        mov     al, [es:si+2]
+        and     al, 0xDF
+        cmp     al, 'A'
+        jne     .no
+        mov     al, [es:si+3]
+        and     al, 0xDF
+        cmp     al, 'P'
+        jne     .no
+        pop     si
+        pop     ax
+        clc
+        ret
+.no:    pop     si
+        pop     ax
+        stc
+        ret
 
 ; =============================================================================
 ; dpmi_unload: INT 2Fh back, if it is still ours and no client is running
@@ -1004,6 +1057,8 @@ xms_handle:     dw 0
 host_base:      dd 0
 xarea:          dd 0
 xarea_kb:       dd 0
+                align 4
+client_iopl:    dd 0x3000                       ; see the note in dpmi_pm.inc
 client_active:  db 0
 client_psp:     dw 0
 nest_depth:     db 0
@@ -1042,6 +1097,8 @@ ent_cs:         dw 0
 ent_flags:      dw 0
 svc_table:      times SVC_MAX * 4 db 0
 msg_loaded:     db "DPMI: host ready for 32-bit clients (DOS/4GW), 0.9", 13, 10, 0
+msg_trapping:   db "DPMI: clients run where their ports can be watched, which "
+                db "costs them the interrupt flag", 13, 10, 0
 msg_no_xms:     db "DPMI: needs extended memory - LOAD XMS first", 13, 10, 0
 msg_fault:      db "DPMI: unhandled exception ", 0
 msg_fault_at:   db " at ", 0
