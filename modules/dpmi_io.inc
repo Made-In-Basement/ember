@@ -444,9 +444,16 @@ io_dev_out:
         je      .spk_off
         cmp     al, 0xE1                ; what version are you?
         jne     .not_version
-        mov     byte [dsp_reply], 4     ; a Sound Blaster Pro's answer
+        ; 3.02: a Sound Blaster Pro 2, which is honestly what this is - eight
+        ; bits, one channel, transfer channel 1, auto-initialise, and the
+        ; Pro's mixer.  It used to say 4.5, which is a Sound Blaster 16, and
+        ; a game that believes that will ask for sixteen-bit stereo on a
+        ; transfer channel nothing here answers to and get silence for it.
+        ; Claiming less than is delivered is safe; claiming more is a bug
+        ; that looks like the game's fault.
+        mov     byte [dsp_reply], 3
         mov     byte [dsp_has_reply], 1
-        mov     byte [dsp_reply2], 5
+        mov     byte [dsp_reply2], 2
         mov     byte [dsp_has_reply2], 1
         jmp     .done
 .not_version:

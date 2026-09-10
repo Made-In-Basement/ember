@@ -50,17 +50,37 @@ int31_ok:
 
 ; int31_trace: the call and its answer into the ring at CALLTRACE_LIN:
 ;   function (bit 15 = failed), BX CX DX in, AX BX CX DX out
+;
+;   Two switches, assembled in with -D when a question needs them:
+;     TRACE_FIRST    keep the first calls rather than the last.  What a
+;                    client decides about the host it found, it decides in
+;                    the first hundred calls; by the time anything goes
+;                    wrong the ring has turned over seven times.
+;     TRACE_VECTORS  keep the 02xx calls too.  They are three hundred of
+;                    the first five hundred, which is why they are dropped
+;                    - and they are also the whole of what a client thinks
+;                    the interrupt table looks like, which is worth seeing.
 int31_trace:
         push    eax
         push    ecx
         push    esi
         mov     ax, [cur_fn]
+%ifndef TRACE_VECTORS
         cmp     ah, 0x02                        ; vectors: too many to keep
         je      .skip
+%endif
         mov     esi, [xarea]
         add     esi, CALLTRACE_OFF
         mov     ecx, [gs:esi]
         inc     dword [gs:esi]
+%ifdef TRACE_FIRST
+        ; The first calls, not the last.  What a client decides about the
+        ; host it has found, it decides in the first few dozen calls; by the
+        ; time anything goes wrong the ring has turned over many times and
+        ; the decision has long since scrolled away.
+        cmp     ecx, CALLTRACE_MAX
+        jae     .skip
+%endif
         push    esi
         mov     eax, ecx
         push    edx
