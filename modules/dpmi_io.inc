@@ -1417,9 +1417,62 @@ io_audio_open:
         jc      .none
         mov     byte [au_have], 1
         mov     word [au_err], 0xFFFF
+        call    io_audio_hush           ; nothing of the last game in it
 .none:  pop     dx
         pop     ax
         ret
+
+; -----------------------------------------------------------------------------
+; io_audio_hush: silence in the ring, now.
+;   The machine's audio hardware plays round and round whatever is in the ring
+;   and never stops asking for more.  Between a game's last sample and the
+;   stream being handed back nobody is writing it - the report below takes a
+;   moment, and a moment is three times round - so what is heard is the last
+;   fraction of a second of the game, repeating.  That is the glitch at the
+;   end of a game, and the same thing at the start is the end of the last one.
+;
+;   So the ring is filled with silence at both ends.  The kernel does this too
+;   when the stream stops, but that is later than the report and later than
+;   the ear; and an older kernel does not do it at all.
+;
+;   The ring is always in the first megabyte - the transfer hardware that
+;   reads it cannot see past that - so real mode can reach it, and a paragraph
+;   boundary is where it always starts.
+; -----------------------------------------------------------------------------
+io_audio_hush:
+        cmp     byte [au_have], 0
+        je      .none
+        push    eax
+        push    cx
+        push    di
+        push    es
+        mov     eax, [au_ring]
+        or      eax, eax
+        jz      .done
+        cmp     eax, 0x00100000
+        jae     .done
+        push    eax
+        mov     eax, [au_bytes]                 ; 64 KB, exactly: its last
+        shr     eax, 1                          ;  word is the segment's last
+        jz      .too_odd
+        cmp     eax, 0x10000                    ; and a word count is sixteen
+        ja      .too_odd                        ;  bits, no more
+        mov     cx, ax
+        pop     eax
+        shr     eax, 4
+        mov     es, ax
+        xor     di, di
+        xor     ax, ax
+        rep     stosw
+        wbinvd                                  ; the controller reads memory
+        jmp     .done
+.too_odd:
+        pop     eax
+.done:  pop     es
+        pop     di
+        pop     cx
+        pop     eax
+.none:  ret
 
 io_audio_close:
         push    ax
@@ -1479,6 +1532,7 @@ io_buffer_head:
         ret
 
 io_report:
+        call    io_audio_hush           ; before the report, not after it
         cmp     dword [io_writes], 0
         jne     .say
         cmp     dword [io_reads], 0
