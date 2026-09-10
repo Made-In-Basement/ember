@@ -129,6 +129,7 @@ RC_SIZE         equ 50
 ; which port.  Read with tools/drtrace.py.
 ; %define DRLOG 1                        ; the card's traffic, into a page of
                                         ;  low memory - see tools/drtrace.py                        ; the card's traffic, into a page of
+                                        ;  low memory - see tools/drtrace.py                        ; the card's traffic, into a page of
                                         ;  low memory - see tools/drtrace.py
 ; The synthesiser is C, and C assumes the stack is reached the same way as
 ; everything else.  This host's ring-0 stack is not: it is flat, while the
@@ -148,13 +149,18 @@ TRACE_SEG       equ 0x07C0                      ; a page of real-mode excursions
 IRQCOUNT_LIN    equ 0x7DE4                      ; hardware interrupts: seen,
                                                 ;  given to the client, sent
                                                 ;  down to real mode
+; Two rings lived at 7E00h: the exceptions a client took, and the INT 31h
+; calls that failed.  Each wrote over the other's count, so whichever was
+; read said something that had never happened.  Fourteen exceptions is as
+; many as anyone reads, and that leaves the last page for the failures.
 EXCTRACE_LIN    equ 0x7E00                      ; ...and, past them, the
-EXCTRACE_MAX    equ 30                          ;  exceptions a client took
-EXCTRACE_LIN    equ 0x7E00                      ; ...and, in its second half,
-EXCTRACE_MAX    equ 30                          ;  the exceptions a client took
+EXCTRACE_MAX    equ 7                           ;  exceptions a client took,
+EXCTRACE_SIZE   equ 32                          ;  the instruction, and the
+                                                ;  stack it was standing on
 TRACE_LIN       equ 0x7C00
 TRACE_ENTRIES   equ 40
-ERRLOG_LIN      equ 0x7E00                      ; failed INT 31h calls
+ERRLOG_LIN      equ 0x7F00                      ; failed INT 31h calls, apart
+ERRLOG_MAX      equ 32                          ;  from them
 CALLTRACE_OFF   equ 0xE000                      ; the last INT 31h calls, a ring of
 CALLTRACE_MAX   equ 500                         ;  16-byte entries in the XMS block
 CALLBACKS       equ 16
@@ -1123,6 +1129,9 @@ xarea:          dd 0
 xarea_kb:       dd 0
                 align 4
 client_iopl:    dd 0x3000                       ; see the note in dpmi_pm.inc
+exc_last_eip:   dd 0                            ; the fault before this one,
+exc_repeat:     dd 0                            ;  and how many times it has
+exc_last_vec:   db 0                            ;  arrived at the same place
 client_active:  db 0
 client_psp:     dw 0
 nest_depth:     db 0

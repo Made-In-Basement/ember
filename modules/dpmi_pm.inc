@@ -377,6 +377,46 @@ seg_ok:
         xor     eax, eax
 .done:  ret
 
+; -----------------------------------------------------------------------------
+; exc_going_nowhere: a fault that keeps arriving at the same instruction.
+;
+;   A handler that faults on its own first instruction cannot be told about
+;   the fault: it is given it, faults again in the same place, and is given it
+;   again.  That is not hypothetical - it is what a DOS/4GW client does on the
+;   way out if anything has disturbed it.  Its handler for invalid opcodes is
+;   in a code segment it has already given back, so the first instruction of
+;   that handler is whatever happens to be at the address now, the processor
+;   refuses it, and the two of them go round forever: the machine appears hung
+;   with nothing on the screen and no way back but the power switch.
+;
+;   Sixteen times at one address is not a program making progress.  It is
+;   ended instead, the way any unhandled fault ends it, and the machine comes
+;   back to the prompt - which is the difference between a bug and a reboot.
+; -----------------------------------------------------------------------------
+EXC_REPEATS     equ 16
+exc_going_nowhere:
+        push    eax
+        mov     eax, [ebp + F_EIP]
+        cmp     eax, [exc_last_eip]
+        jne     .somewhere_else
+        movzx   eax, byte [ebp + F_VEC]
+        cmp     al, [exc_last_vec]
+        jne     .somewhere_else
+        inc     dword [exc_repeat]
+        cmp     dword [exc_repeat], EXC_REPEATS
+        jb      .fine
+        pop     eax
+        add     esp, 4                          ; this call's own return
+        jmp     exc_no_handler
+.somewhere_else:
+        mov     eax, [ebp + F_EIP]
+        mov     [exc_last_eip], eax
+        movzx   eax, byte [ebp + F_VEC]
+        mov     [exc_last_vec], al
+        mov     dword [exc_repeat], 0
+.fine:  pop     eax
+        ret
+
 ; =============================================================================
 ; hw_interrupt: the client's handler if it has one, else real mode's
 ; =============================================================================
@@ -617,8 +657,11 @@ exception:
         cmp     eax, EXCTRACE_MAX
         jae     .traced
         inc     dword [gs:ebx]
-        shl     eax, 4
-        lea     ebx, [ebx + eax + 16]
+        push    ecx
+        push    edx
+        mov     ecx, EXCTRACE_SIZE
+        mul     ecx
+        lea     ebx, [ebx + eax + EXCTRACE_SIZE]
         movzx   eax, byte [ebp + F_VEC]
         mov     [gs:ebx], eax
         mov     eax, [ebp + F_ERR]
@@ -627,15 +670,41 @@ exception:
         mov     [gs:ebx + 8], eax
         mov     eax, [ebp + F_EIP]
         mov     [gs:ebx + 12], eax
+        ; and the instruction itself.  "Exception 6 at this address" says the
+        ; processor refused an opcode and nothing about which; four bytes of
+        ; it turn a guess into a reading.
+        movzx   ecx, word [ebp + F_CS]
+        call    desc_base
+        add     eax, [ebp + F_EIP]
+        mov     eax, [gs:eax]
+        mov     [gs:ebx + 16], eax
+        ; and the stack it was standing on.  A RET that faults with no error
+        ; code faulted on where it was going, and where it was going came off
+        ; the stack: the two words at the top say whether the stack is out of
+        ; step or the address on it is simply wrong.
+        mov     eax, [ebp + F_ESP]
+        mov     [gs:ebx + 20], eax
+        movzx   ecx, word [ebp + F_SS]
+        call    desc_base
+        add     eax, [ebp + F_ESP]
+        mov     ecx, [gs:eax]
+        mov     [gs:ebx + 24], ecx
+        mov     ecx, [gs:eax + 4]
+        mov     [gs:ebx + 28], ecx
+        pop     edx
+        pop     ecx
 .traced:
         pop     ebx
         pop     eax
+        call    exc_going_nowhere               ; the same fault, over and over
         movzx   eax, byte [ebp + F_VEC]
         cmp     dword [exc_handlers + eax*8], 0
         jne     deliver_exc
         cmp     dword [pm_vectors + eax*8], 0
         jne     deliver_int
         ; ---- nobody wants it: end the program, saying where ----
+exc_no_handler:
+        movzx   eax, byte [ebp + F_VEC]
         mov     [fault_vec], al
         mov     eax, [ebp + F_EIP]
         mov     [fault_eip], eax

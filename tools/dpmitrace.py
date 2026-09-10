@@ -25,9 +25,13 @@ def main():
     if len(d) > base + 4:
         m = struct.unpack_from("<I", d, base)[0]
         print(f"exceptions the client took: {m}")
-        for k in range(min(m, 30)):
-            vec, err, cs, eip = struct.unpack_from("<4I", d, base + 16 + k * 16)
-            print(f"  exception {vec:2} error {err:04X} at {cs:04X}:{eip:08X}")
+        for k in range(min(m, 7)):
+            (vec, err, cs, eip, op, esp, s0,
+             s1) = struct.unpack_from("<8I", d, base + 32 + k * 32)
+            print(f"  exception {vec:2} error {err:04X} at {cs:04X}:{eip:08X}"
+                  f"  on {op & 0xFF:02X} {(op >> 8) & 0xFF:02X} "
+                  f"{(op >> 16) & 0xFF:02X} {(op >> 24) & 0xFF:02X}")
+            print(f"      ESP {esp:08X} -> {s0:08X} {s1:08X}")
     r = open(sys.argv[2], "rb").read() if len(sys.argv) > 2 else b""
     total = struct.unpack_from("<I", r, 0)[0] if r else 0
     print(f"INT 31h calls: {total}; the last {min(total, 500)}:")
@@ -45,10 +49,10 @@ def main():
             continue
         print(f"  {fn & 0x7FFF:04X}h BX={bi:04X} CX={ci:04X} from {di:04X} -> "
               f"{bad}AX={ao:04X} BX={bo:04X} CX={co:04X} DX={do_:04X}")
-    n = struct.unpack_from("<I", d, 0x200)[0]
+    n = struct.unpack_from("<I", d, 0x300)[0]
     print(f"failed INT 31h calls: {n}")
     for i in range(min(n, 32)):
-        err, fn = struct.unpack_from("<HH", d, 0x204 + i * 4)
+        err, fn = struct.unpack_from("<HH", d, 0x304 + i * 4)
         print(f"  function {fn:04X}h -> error {err:04X}h")
 
 

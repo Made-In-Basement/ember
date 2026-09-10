@@ -397,6 +397,17 @@ io_dev_out:
         test    al, 1
         jz      .reset_done
         mov     byte [dsp_resetting], 1
+        ; A reset stops whatever was playing, which is what a real chip does
+        ; and what a program that resets on the way out is counting on.  It
+        ; matters more here than on a real card: while a transfer is running
+        ; this host writes the controller's address register to say how far
+        ; the sound has got, and a transfer that never ends means writing it
+        ; over the top of a program that is reprogramming the same registers.
+        ; Doom resets, sets the card up again, and did not survive the
+        ; collision.
+        mov     byte [sb_playing], 0
+        mov     byte [sb_auto], 0
+        mov     byte [sb_irq_owed], 0
         jmp     .done
 .reset_done:
         cmp     byte [dsp_resetting], 0
