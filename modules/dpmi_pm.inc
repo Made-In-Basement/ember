@@ -174,7 +174,12 @@ pm_first_entry:
 ;   zero first so the frame is the same shape for everyone.
 %macro VEC_STUB 1
 %%start:
-%if %1 == 8 || %1 == 10 || %1 == 11 || %1 == 12 || %1 == 13 || %1 == 14 || %1 == 17
+; Which vectors arrive with an error code the processor pushed.  17 is
+; alignment check, which cannot happen without CR0.AM and EFLAGS.AC and so
+; never does - while INT 11h, which lands on the same vector, is the BIOS
+; equipment list and happens constantly.  Assuming an error code there
+; leaves the frame four bytes out for every one of them.
+%if %1 == 8 || %1 == 10 || %1 == 11 || %1 == 12 || %1 == 13 || %1 == 14
         push    dword %1
         jmp     int_common
 %else
@@ -438,6 +443,20 @@ deliver_int:
 ; exception: vector 0-31, not a hardware request
 ; =============================================================================
 exception:
+        ; Below 32 an interrupt the client made and an exception it took are
+        ; the same thing at the gate: the processor delivers both through the
+        ; one vector and says nothing about which.  INT 10h is the video BIOS
+        ; and vector 16; INT 11h is the equipment list and vector 17.  A
+        ; client that has installed exception handlers - DOS/4GW installs
+        ; them for 06h to 11h - would have every one of its BIOS calls
+        ; delivered to them instead.
+        ;
+        ; What tells them apart is the instruction.  INT leaves EIP just past
+        ; its own two bytes, so CD nn is behind it; a fault leaves EIP on the
+        ; instruction that faulted.
+        call    was_software_int
+        jc      sw_interrupt
+        movzx   eax, byte [ebp + F_VEC]
         cmp     eax, 13
         jne     .not_gp
         call    gp_emulate                      ; CLI, STI, HLT and port traps
@@ -801,6 +820,41 @@ set_esp0:
         ret
 .top:   mov     eax, [r0_top]
         mov     [tss + 4], eax
+        ret
+
+; -----------------------------------------------------------------------------
+; was_software_int: CF=1 if the client got here by executing INT n rather
+;   than by faulting.  Reads the two bytes in front of the saved EIP.
+; -----------------------------------------------------------------------------
+was_software_int:
+        push    eax
+        push    ecx
+        push    edx
+        push    esi
+        mov     eax, [ebp + F_EIP]
+        cmp     eax, 2                          ; nothing in front of it
+        jb      .no
+        movzx   edx, byte [ebp + F_VEC]
+        movzx   ecx, word [ebp + F_CS]
+        call    desc_base
+        add     eax, [ebp + F_EIP]
+        sub     eax, 2
+        mov     esi, eax
+        cmp     byte [gs:esi], 0xCD
+        jne     .no
+        cmp     [gs:esi + 1], dl
+        jne     .no
+        pop     esi
+        pop     edx
+        pop     ecx
+        pop     eax
+        stc
+        ret
+.no:    pop     esi
+        pop     edx
+        pop     ecx
+        pop     eax
+        clc
         ret
 
 ; =============================================================================

@@ -90,6 +90,8 @@ RC_SS           equ 48
 RC_SIZE         equ 50
 
 TRACE_SEG       equ 0x07C0                      ; a page of real-mode excursions
+EXCTRACE_LIN    equ 0x7E00                      ; ...and, in its second half,
+EXCTRACE_MAX    equ 30                          ;  the exceptions a client took
 TRACE_LIN       equ 0x7C00
 TRACE_ENTRIES   equ 40
 ERRLOG_LIN      equ 0x7E00                      ; failed INT 31h calls
