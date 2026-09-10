@@ -164,6 +164,50 @@ into zeros, not a wait for a key.
   changes nothing: DOS/4GW stops at the same place. Whatever tells its
   loader it may use the raw-mode `INT FCh` services, it is not this.
 
+## What the trace says (2026-09-09)
+
+`-DTRACE_FIRST` and `-DTRACE_VECTORS` (see `modules/dpmi_31.inc`) keep the
+*first* five hundred INT 31h calls including the 02xx ones, which is where a
+client decides what it has found. DOS/4GW's opening moves:
+
+    0   000Bh, 000Ch    two descriptors set up
+    4   0A00h           the vendor API, refused (by design)
+    5   0305h           save/restore addresses - answered
+    6   0306h           raw mode switch addresses - answered
+    7   0003h           selector increment: 8
+    8   0000h           six LDT descriptors, from 0037h
+    ...
+    7   0204h x 256     every protected-mode vector, read
+    264 0202h x 32      every exception handler, read
+    296 0203h x 13      exception handlers 06h-11h, set
+    309 0205h x 41      00, 01, 03, 23, 10-15, 17-1A, 1D-1F,
+                        20-22, 25-2E, 21, 10, 75 - set
+
+So it surveys the whole interrupt table and then hooks a list. **FCh is not
+on that list and never becomes so**, and the real-mode vector for FCh is
+still the BIOS's dummy `IRET` at `F000:FF53` at the moment it stalls -
+checked, not assumed. Nothing in either mode has ever installed the API the
+32-bit loader then calls. The dummy `IRET` returns the flags it was handed,
+which reads as success, and the loader walks on.
+
+Making INT FCh fail honestly (CF=1, no reflection) changes nothing: by the
+time it is called the road has been chosen. The raw mode switch whose
+addresses were asked for at call 6 is never used either - no `resume`
+excursions appear in the trace at all.
+
+Two things worth following:
+
+- **Something writes a bad far pointer into the real-mode interrupt table.**
+  `INT 2Fh` is `FFFF:10E8` (this host's own hook) after `LOAD DPMI` and
+  `A700:0068` at the stall. `A700h` is video memory; no real-mode code lives
+  there. Selector `00A7h` exists in the client with base `00131FF0`. A
+  protected-mode pointer written where a real-mode one belongs is exactly
+  the confusion the selector `1522h` fault is made of.
+- **The 32-bit loader's INT FCh thunks** are a table of thirty-four six-byte
+  entries at linear `1208E0h`-`1209A5h`, each `call rel16` / `db n` /
+  `int FCh`. Finding what calls them, and what branch chose that path over
+  the DPMI one, is the disassembly that would settle this.
+
 ## What to try next
 
 1. How does the DOS/16M kernel expect `INT FCh` to reach it in DPMI mode?
