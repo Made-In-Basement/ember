@@ -154,6 +154,7 @@ io_card_reset:
         rep     stosw
         mov     byte [opl_timer_flags], 0xC0
         mov     byte [pic_mask], 0xFF
+        mov     dword [au_lead], AU_LEAD_SLOW   ; nought would fill nothing
         pop     es
         pop     di
         pop     cx
@@ -1153,7 +1154,8 @@ io_pump:
 io_audio_open:
         push    ax
         push    dx
-        mov     byte [au_have], 0
+        call    io_card_reset           ; a card that has just been switched
+        mov     byte [au_have], 0       ;  on, whatever the last one left
         mov     dx, au_info
         mov     ah, 0xF0
         int     0x21
