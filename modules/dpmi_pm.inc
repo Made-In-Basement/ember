@@ -106,6 +106,28 @@ pm_first_entry:
         mov     [ldt_lin], eax
         mov     eax, [xarea]
         mov     dword [gs:eax + CALLTRACE_OFF], 0
+%ifdef DRLOG
+        mov     dword [gs:DRLOG_LIN], 0         ; nothing has touched the card
+        mov     dword [gs:DRLOG_LIN + 4], 0
+        mov     dword [gs:DRLOG_LIN + 8], 0
+        mov     dword [gs:DRLOG_LIN + 12], 0
+%endif
+%ifdef DRLOG
+        push    edi
+        mov     edi, DRLOG_LIN + 16
+.clear_drlog:
+        mov     dword [gs:edi], 0
+        add     edi, 4
+        cmp     edi, DRLOG_LIN + 32
+        jb      .clear_drlog
+        mov     edi, DRAUX_LIN
+.clear_draux:
+        mov     dword [gs:edi], 0
+        add     edi, 4
+        cmp     edi, DRAUX_LIN + 32
+        jb      .clear_draux
+        pop     edi
+%endif
         mov     dword [gs:EXCTRACE_LIN], 0      ; and no exceptions yet
         mov     dword [gs:IRQCOUNT_LIN], 0
         mov     dword [gs:IRQCOUNT_LIN + 4], 0
@@ -119,6 +141,20 @@ pm_first_entry:
         or      eax, 0x22                       ; MP=1, NE=1
         mov     cr0, eax
         fninit
+%ifdef HAVE_OPL
+        ; the synthesiser, at whatever rate the machine's stream plays
+        mov     eax, [au_rate]
+        or      eax, eax
+        jnz     .have_rate
+        mov     eax, 44100
+.have_rate:
+        OPL_ENTER
+        push    eax
+        call    OPL_RESET
+        add     esp, 4
+        OPL_LEAVE
+%endif
+        call    io_watch_arm                    ; the card's ports
         ; ---- the client's real-mode segments as descriptors ----
         movzx   eax, word [ent_cs]
         shl     eax, 4
@@ -328,7 +364,9 @@ hw_interrupt:
         cmp     dword [pm_vectors + eax*8], 0
         je      .to_real
         inc     dword [gs:IRQCOUNT_LIN + 4]
-        jmp     deliver_int
+        call    push_int
+        call    card_interrupt                  ; and the card's, in front of it
+        jmp     int_exit
 .to_real:
         inc     dword [gs:IRQCOUNT_LIN + 8]
         ; reflect: registers do not matter to a hardware handler
@@ -436,8 +474,19 @@ req_to_frame:
 ;   then an IRET frame that returns into our ring-3 stub.
 ; =============================================================================
 deliver_int:
-        mov     esi, [pm_vectors + eax*8]       ; offset
-        movzx   edx, word [pm_vectors + eax*8 + 4]  ; selector
+        movzx   eax, byte [ebp + F_VEC]
+        call    push_int
+        jmp     int_exit
+
+; -----------------------------------------------------------------------------
+; push_int: the same, but it comes back rather than leaving.  A second call
+;   nests inside the first: the frame it works on is the one the client will
+;   resume with, so pushing twice makes the client enter the second handler
+;   first and reach the first one through its IRET.  That is how the card's
+;   interrupt gets in front of the timer tick that noticed it.
+; -----------------------------------------------------------------------------
+push_int:
+        push    eax
         movzx   ecx, word [ebp + F_SS]
         mov     eax, [ebp + F_ESP]
         call    stack_addr                      ; EAX = linear top, EDX = mask
@@ -461,18 +510,52 @@ deliver_int:
         and     eax, ~EFL_TF
         mov     [gs:edi + 8], eax               ; what the handler's IRET pops
         ; the handler itself, with interrupts off
-        movzx   eax, byte [ebp + F_VEC]
+        pop     eax                             ; the vector, as it came in
         mov     esi, [pm_vectors + eax*8]
         movzx   edx, word [pm_vectors + eax*8 + 4]
         mov     [ebp + F_EIP], esi
         mov     [ebp + F_CS], edx
         and     dword [ebp + F_EFL], ~(EFL_IF | EFL_TF)
-        jmp     int_exit
+        ret
+
+; -----------------------------------------------------------------------------
+; card_interrupt: a block of samples has been played, so the card would have
+;   raised its own line.  Nothing did - there is no chip on it - so it is
+;   raised here, on the back of the timer tick that noticed, and nested inside
+;   it: the client enters its handler for the card first and its handler for
+;   the timer after, which is the order a real machine would have given them.
+;
+;   A client that has not asked for the line, or has masked it, is not given
+;   anything: what is owed simply stays owed until it is wanted.
+; -----------------------------------------------------------------------------
+CARD_IRQ        equ 5
+CARD_VECTOR     equ 8 + CARD_IRQ
+card_interrupt:
+        cmp     byte [sb_irq_owed], 0
+        je      .none
+        cmp     dword [pm_vectors + CARD_VECTOR * 8], 0
+        je      .none                           ; nobody is listening for it
+        push    eax
+        in      al, 0x21                        ; and the line is not masked
+        test    al, 1 << CARD_IRQ
+        pop     eax
+        jnz     .none
+        mov     byte [sb_irq_owed], 0
+        inc     dword [gs:IRQCOUNT_LIN + 24]
+        mov     eax, CARD_VECTOR
+        call    push_int
+.none:  ret
 
 ; =============================================================================
 ; exception: vector 0-31, not a hardware request
 ; =============================================================================
 exception:
+        movzx   eax, byte [ebp + F_VEC]
+        cmp     eax, 1                          ; a debug exception may be the
+        jne     .not_debug                      ;  card's ports being touched
+        call    dr_io_trap
+        jnc     int_exit
+.not_debug:
         ; Below 32 an interrupt the client made and an exception it took are
         ; the same thing at the gate: the processor delivers both through the
         ; one vector and says nothing about which.  INT 10h is the video BIOS
@@ -912,6 +995,235 @@ was_software_int:
 .no:    pop     esi
         pop     edx
         pop     ecx
+        pop     eax
+        clc
+        ret
+
+
+; =============================================================================
+;  The card's ports, watched without the permission map
+; -----------------------------------------------------------------------------
+;  A client runs at IOPL 3 so that POPF and IRET can put its interrupt flag
+;  back - see the note beside client_iopl - and at IOPL 3 the permission map
+;  in the task state segment is not consulted at all.  So the ports are
+;  watched the other way the processor offers: the debug registers, which
+;  answer to nobody's privilege level.
+;
+;  The catch is that a debug trap arrives *after* the instruction, where the
+;  permission map's fault arrives before it.  For an OUT that costs nothing -
+;  the value is still in the register and no chip took it anywhere.  For an
+;  IN the program has already latched FFh from a port with nothing on it, so
+;  the answer the card would have given is put into the frame afterwards.
+;  Nothing is lost by that, because there is nothing there to have a side
+;  effect.
+;
+;  Four breakpoints, and four is all there is:
+;     224h-227h   the mixer, and the reset that begins the handshake
+;     228h-22Bh   what the DSP says back
+;     22Ch-22Fh   what it is told, and whether it is ready
+;     388h-389h   the synthesiser
+;  The transfer controller is not among them and does not need to be: its
+;  registers are real and the client's writes reach them, so when the DSP is
+;  told to play, the address can simply be read back out of the chip.
+; =============================================================================
+DR_RW_IO        equ 2                           ; needs CR4.DE
+DR_LEN1         equ 0
+DR_LEN2         equ 1
+DR_LEN4         equ 3
+%define DR_SLOT(rw, len) (((len) << 2) | (rw))
+DR7_CARD        equ 0x000000AA \
+                | (DR_SLOT(DR_RW_IO, DR_LEN4) << 16) \
+                | (DR_SLOT(DR_RW_IO, DR_LEN4) << 20) \
+                | (DR_SLOT(DR_RW_IO, DR_LEN4) << 24) \
+                | (DR_SLOT(DR_RW_IO, DR_LEN2) << 28)
+
+%ifdef DRLOG
+; dr_note: what was on which port, into the ring.  EDX is the port, CL the
+;   width, BL the opcode; EAX is free.
+dr_note:
+        cmp     edx, IO_ADLIB                   ; the synthesiser is nearly all
+        jb      .worth_it                       ;  of the traffic and none of
+        cmp     edx, IO_ADLIB + 1               ;  the mystery
+        jbe     .not_worth_it
+.worth_it:
+        push    eax
+        push    edi
+        mov     eax, [gs:DRLOG_LIN + 12]
+        mov     edi, eax
+        inc     eax
+        mov     [gs:DRLOG_LIN + 12], eax
+        and     edi, DRRING_MAX - 1             ; the last of them, not the first
+        shl     edi, 2
+        add     edi, DRRING_LIN
+        mov     ax, dx
+        mov     [gs:edi], ax                    ; the port
+        mov     al, bl                          ; the opcode as it stood
+        mov     [gs:edi + 2], al
+        mov     eax, [ebp + F_EAX]
+        mov     [gs:edi + 3], al                ; and what was in AL
+        pop     edi
+        pop     eax
+.not_worth_it:
+        ret
+%endif
+
+io_watch_arm:
+        push    eax
+        mov     eax, cr4
+        or      eax, 0x08                       ; CR4.DE, or the I/O encoding
+        mov     cr4, eax                        ;  means something else
+        xor     eax, eax
+        mov     dr6, eax
+        mov     eax, 0x0224
+        mov     dr0, eax
+        mov     eax, 0x0228
+        mov     dr1, eax
+        mov     eax, 0x022C
+        mov     dr2, eax
+        mov     eax, IO_ADLIB
+        mov     dr3, eax
+        mov     eax, DR7_CARD
+        mov     dr7, eax
+        pop     eax
+        ret
+
+; -----------------------------------------------------------------------------
+; dr_io_trap: a debug exception.  CF=0 if it was one of the card's ports and
+;   has been dealt with; CF=1 if it belongs to the client.
+; -----------------------------------------------------------------------------
+dr_io_trap:
+        push    eax
+%ifdef DRLOG
+        inc     dword [gs:DRLOG_LIN]
+%endif
+        mov     eax, dr6
+        test    al, 0x0F                        ; any of the four
+        jnz     .ours
+        pop     eax
+        stc
+        ret
+.ours:
+%ifdef DRLOG
+        inc     dword [gs:DRLOG_LIN + 4]
+%endif
+        push    ebx
+        push    ecx
+        push    edx
+        push    esi
+        xor     eax, eax
+        mov     dr6, eax                        ; noticed
+        movzx   ecx, word [ebp + F_CS]
+        call    desc_base
+        add     eax, [ebp + F_EIP]
+        mov     esi, eax                        ; just past the instruction
+
+        ; Which of the four shapes it was.  Longest first, so that a 66h in
+        ; front is read as the prefix it is and not as the tail of whatever
+        ; came before.
+        mov     ecx, 3
+.shape:
+        mov     eax, esi
+        sub     eax, ecx
+        mov     bl, [gs:eax]
+        xor     bh, bh
+        cmp     bl, 0x66
+        jne     .no_prefix
+        mov     bh, 1
+        inc     eax
+        mov     bl, [gs:eax]
+.no_prefix:
+        mov     dl, bl
+        and     dl, 0xF4
+        cmp     dl, 0xE4                        ; an I/O opcode at all?
+        jne     .next_shape
+        movzx   edx, bh                         ; how long it would then be
+        test    bl, 0x08
+        jz      .with_imm
+        inc     edx                             ; EC-EF: no immediate
+        jmp     .measured
+.with_imm:
+        add     edx, 2                          ; E4-E7: an immediate byte
+.measured:
+        cmp     edx, ecx
+        je      .found
+.next_shape:
+        dec     ecx
+        jnz     .shape
+        jmp     .unknown
+
+.found:
+        ; the port
+        test    bl, 0x08
+        jz      .port_imm
+        mov     edx, [ebp + F_EDX]
+        and     edx, 0xFFFF
+        jmp     .have_port
+.port_imm:
+        movzx   edx, byte [gs:esi - 1]
+.have_port:
+        ; how wide
+        mov     cl, 1
+        test    bl, 0x01
+        jz      .have_width
+        mov     cl, 4
+        cmp     bh, 0
+        je      .have_width
+        mov     cl, 2
+.have_width:
+%ifdef DRLOG
+        call    dr_note
+%endif
+        test    bl, 0x02
+        jnz     .an_out
+        ; ---- IN: the program has FFh; give it what the card would say ----
+        call    io_dev_in
+        cmp     cl, 1
+        je      .in_byte
+        cmp     cl, 2
+        je      .in_word
+        mov     [ebp + F_EAX], eax
+        jmp     .done
+.in_byte:
+        mov     ebx, [ebp + F_EAX]
+        mov     bl, al
+        mov     [ebp + F_EAX], ebx
+        jmp     .done
+.in_word:
+        mov     ebx, [ebp + F_EAX]
+        mov     bx, ax
+        mov     [ebp + F_EAX], ebx
+        jmp     .done
+.an_out:
+        mov     eax, [ebp + F_EAX]
+        cmp     cl, 1
+        jne     .out_wider
+        and     eax, 0xFF
+        jmp     .out_go
+.out_wider:
+        cmp     cl, 2
+        jne     .out_go
+        and     eax, 0xFFFF
+.out_go:
+        call    io_dev_out
+.done:
+        pop     esi
+        pop     edx
+        pop     ecx
+        pop     ebx
+        pop     eax
+        clc
+        ret
+.unknown:
+%ifdef DRLOG
+        inc     dword [gs:DRLOG_LIN + 8]
+%endif
+        ; One of the card's ports was touched by something this cannot read.
+        ; Swallowing it is better than handing the client a debug exception
+        ; it never asked for.
+        pop     esi
+        pop     edx
+        pop     ecx
+        pop     ebx
         pop     eax
         clc
         ret

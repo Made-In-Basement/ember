@@ -1,12 +1,17 @@
 /* The synthesiser as a flat image inside SB.MOD.
-   The address here must match where modules/sb.asm places the incbin, and
-   SB.MOD's own ORG is added to neither: the module's selectors are based at
-   the module, so an offset within it is all any address needs to be. */
+   The address here must match where the module places the incbin, and the
+   module's own ORG is added to neither: the module's selectors are based at
+   the module, so an offset within it is all any address needs to be.
+
+   Two modules place it, and their code is not the same size, so the address
+   is not written here but given on the command line - see tools/build_opl.py.
+   SB.MOD has it low, where its own code ends; DPMI.MOD, which is larger,
+   has it above everything of its own. */
 OUTPUT_FORMAT(elf32-i386)
 ENTRY(opl_reset)
 SECTIONS
 {
-    . = 0x6000;
+    . = @OPL_AT@;               /* tools/build_opl.py fills this in */
     .text   : { *(.text .text.*) }
     .rodata : { *(.rodata .rodata.*) }
     .data   : { *(.data .data.*) }

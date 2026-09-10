@@ -2088,7 +2088,10 @@ blaster_wanted:
         push    bx
         mov     si, name_sb
         call    mod_find_name
-        pop     bx
+        jnc     .yes
+        mov     si, name_dpmi                   ; the DPMI host answers for a
+        call    mod_find_name                   ;  card too, for its clients
+.yes:   pop     bx
         pop     si
         ret
 
@@ -2752,6 +2755,7 @@ exec_image_size: dd 0
 sysvars:        times 32 db 0
 env_blaster_on: db 0
 name_sb:        db "SB      "
+name_dpmi:      db "DPMI    "
 ; What a game's setup reads to find the card: base 220h, interrupt 5,
 ; transfer channel 1, and a type of 3 - a Sound Blaster Pro, which is what
 ; the DSP here says it is.

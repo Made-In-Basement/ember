@@ -1,3 +1,10 @@
+%ifndef OPL_OWN_STACK                   ; the monitor's stack already agrees
+%macro OPL_ENTER 0
+%endmacro
+%macro OPL_LEAVE 0
+%endmacro
+%endif
+
 ; =============================================================================
 ;  dpmi_io.inc - ports a client thinks it has, answered by a host that does not
 ; -----------------------------------------------------------------------------
@@ -352,10 +359,12 @@ io_dev_out:
         push    edx
         push    ecx
         movzx   eax, al
+        OPL_ENTER
         push    eax
         push    ebx
         call    OPL_WRITE
         add     esp, 8
+        OPL_LEAVE
         pop     ecx
         pop     edx
         pop     eax
@@ -434,6 +443,20 @@ io_dev_out:
         je      .expect2
         cmp     al, 0x1C                ; play, and keep playing
         je      .start_auto
+        ; The Pro's high-speed transfers.  They are the same transfers with
+        ; the chip's own command handling switched off for the duration - it
+        ; is how a Pro reaches 22 kHz and above - and there is nothing here
+        ; that runs at a speed, so they are simply the ordinary ones.  DMX,
+        ; which is the sound in Doom, Heretic, Hexen and Raptor, asks for 90h
+        ; and nothing else.
+        cmp     al, 0x90                ; high speed, and keep playing
+        je      .start_auto
+        cmp     al, 0x91                ; high speed, once
+        je      .start_once
+        cmp     al, 0xDA                ; leave auto-initialise
+        je      .stop_auto
+        cmp     al, 0xD8                ; is the speaker on?
+        je      .speaker_status
         cmp     al, 0xD0                ; hold
         je      .pause
         cmp     al, 0xD4                ; carry on
@@ -469,6 +492,22 @@ io_dev_out:
 .start_auto:
         mov     byte [sb_auto], 1
         jmp     .started
+.start_once:
+        mov     byte [sb_auto], 0
+        jmp     .started
+.stop_auto:
+        ; The block being played is finished first on a real chip; here it
+        ; stops, which is what the program asked for and a fraction of a
+        ; block sooner than it would have got.
+        mov     byte [sb_auto], 0
+        mov     byte [sb_playing], 0
+        jmp     .done
+.speaker_status:
+        mov     al, [sb_speaker]
+        neg     al                      ; FFh on, 00h off
+        mov     [dsp_reply], al
+        mov     byte [dsp_has_reply], 1
+        jmp     .done
 .pause: mov     byte [sb_playing], 0
         jmp     .done
 .resume:
@@ -483,13 +522,34 @@ io_dev_out:
         mov     byte [sb_speaker], 0
         jmp     .done
 .started:
-        ; the buffer is whatever the transfer controller was last told about
-        ; channel 1; the page register holds the bits the address cannot
+        ; Where the samples are.  Usually this host watched the game program
+        ; the transfer controller and remembered it on the way past - but a
+        ; DPMI client at privilege level three has no permission map, its
+        ; writes went to the real chip, and nothing was seen.  So if nothing
+        ; has ever been seen, ask the chip, and ask it every time: a game
+        ; moves its buffer, and a shadow that was right once is worse than no
+        ; shadow at all - it plays whatever is at the old address, at full
+        ; volume, for as long as the game asks for sound.
+        cmp     byte [dma_seen], 0
+        jne     .have_dma
+        call    dma_read_back
+.have_dma:
+        ; the page register holds the bits the address cannot
         movzx   ebx, byte [dma_page + 1]
         shl     ebx, 16
         movzx   eax, word [dma_addr + 2]
         or      ebx, eax
         mov     [au_src], ebx
+        ; How long the buffer is, which is not how long a block is.  A program
+        ; that wants to be told half way through - and every one that fills a
+        ; buffer while the other half plays does - gives the transfer
+        ; controller the whole buffer and the chip half of it, and expects the
+        ; second half to follow the first.  Rewinding to the front at the end
+        ; of every block would play the first half over and over.
+        movzx   eax, word [dma_count + 2]
+        inc     eax
+        mov     [sb_dma_len], eax
+        mov     dword [au_block], 0
         mov     dword [au_spos], 0
         mov     byte [au_primed], 0             ; place the write again
         mov     byte [sb_playing], 1
@@ -505,6 +565,7 @@ io_dev_out:
 ; comes next is remembered in a flip-flop that port 0Ch resets.  Get that
 ; wrong and every buffer address is half right, which is worse than wrong.
 .dma_chan:
+        mov     byte [dma_seen], 1      ; the writes reach here: no need to ask
         mov     ebx, edx
         cmp     bl, 0x08
         jae     .dma_ctrl
@@ -623,6 +684,30 @@ pcs_retune:
         pop     edx
         pop     ecx
         pop     ebx
+        pop     eax
+        ret
+
+; -----------------------------------------------------------------------------
+; dma_read_back: channel 1's address and count, read out of the real chip.
+;   The halves come out in the order a flip-flop decides, so it is reset
+;   first; the game has finished programming by the time this is called.
+; -----------------------------------------------------------------------------
+dma_read_back:
+        push    eax
+        xor     al, al
+        out     0x0C, al                ; low half first
+        in      al, 0x02
+        mov     [dma_addr + 2], al
+        in      al, 0x02
+        mov     [dma_addr + 3], al
+        in      al, 0x83                ; the page above them
+        mov     [dma_page + 1], al
+        xor     al, al
+        out     0x0C, al
+        in      al, 0x03
+        mov     [dma_count + 2], al
+        in      al, 0x03
+        mov     [dma_count + 3], al
         pop     eax
         ret
 
@@ -774,10 +859,46 @@ AU_LEAD_STEP    equ 1024                        ; what falling behind costs
 
 io_pump:
         inc     dword [au_calls]
+%ifdef DRLOG
+        inc     dword [gs:DRLOG_LIN + 16]
+        push    eax
+        movzx   eax, word [au_err]
+        mov     [gs:DRAUX_LIN + 0], eax
+        movzx   eax, byte [au_have]
+        mov     [gs:DRAUX_LIN + 4], eax
+        mov     eax, [opl_writes]
+        mov     [gs:DRAUX_LIN + 8], eax
+%ifdef HAVE_OPL
+        movzx   eax, byte [OPL_LIVE]
+%else
+        xor     eax, eax
+%endif
+        mov     [gs:DRAUX_LIN + 12], eax
+        movzx   eax, byte [sb_playing]
+        mov     [gs:DRAUX_LIN + 16], eax
+        mov     eax, [sb_blocks]
+        mov     [gs:DRAUX_LIN + 20], eax
+        movzx   eax, byte [sb_speaker]
+        mov     [gs:DRAUX_LIN + 24], eax
+        mov     eax, [au_ring]                  ; and where it is all going
+        mov     [gs:DRAUX_LIN + 32], eax
+        mov     eax, [au_bytes]
+        mov     [gs:DRAUX_LIN + 36], eax
+        mov     eax, [au_lpib]
+        mov     eax, [gs:eax]
+        mov     [gs:DRAUX_LIN + 40], eax
+        mov     eax, [au_wpos]
+        mov     [gs:DRAUX_LIN + 44], eax
+        pop     eax
+%endif
         cmp     byte [au_have], 0
         je      .out
         inc     dword [au_ready]
+%ifdef DRLOG
+        inc     dword [gs:DRLOG_LIN + 20]
+%endif
         pushad
+        OPL_ENTER                               ; the synthesiser's stack
         ; What is making a sound?  Either, both, or - once something has -
         ; neither, which still has to be written, because the ring plays on
         ; whatever is in it and silence has to be put there.
@@ -797,6 +918,9 @@ io_pump:
         cmp     byte [au_primed], 0
         je      .done                           ; nothing has ever played
 .work:
+%ifdef DRLOG
+        inc     dword [gs:DRLOG_LIN + 24]
+%endif
         ; how far the hardware has got, in frames
         mov     esi, [au_lpib]
         mov     eax, [gs:esi]
@@ -866,6 +990,9 @@ io_pump:
         sub     eax, edx
         mov     edi, eax                        ; frames to lay down
         add     [au_frames], edi
+%ifdef DRLOG
+        add     [gs:DRLOG_LIN + 28], edi
+%endif
 
         ; The step through the game's buffer, in sixteen-sixteen.  The card is
         ; told a time constant rather than a rate: 256 - 1000000/rate.
@@ -908,11 +1035,22 @@ io_pump:
         mov     byte [sb_irq_owed], 1
         jmp     .no_sample                      ; the speaker plays on alone
 .rewind:
+        ; on to the next block, and round to the front at the end of the buffer
         mov     dword [au_spos], 0
+        push    ecx
+        mov     eax, [au_block]
+        add     eax, ecx                        ; the block that just finished
+        cmp     eax, [sb_dma_len]
+        jb      .block_ok
+        xor     eax, eax
+.block_ok:
+        mov     [au_block], eax
+        pop     ecx
         inc     dword [sb_blocks]
         mov     byte [sb_irq_owed], 1
         xor     eax, eax
 .have_sample:
+        add     eax, [au_block]
         add     eax, [au_src]
         movzx   eax, byte [gs:eax]
         sub     eax, 128                        ; the card's silence is 80h
@@ -953,6 +1091,19 @@ io_pump:
         jge     .not_quiet
         mov     ebx, -32768
 .not_quiet:
+%ifdef DRLOG
+        push    eax                             ; the loudest frame so far
+        mov     eax, ebx
+        or      eax, eax
+        jge     .positive
+        neg     eax
+.positive:
+        cmp     eax, [gs:DRAUX_LIN + 28]
+        jbe     .not_a_peak
+        mov     [gs:DRAUX_LIN + 28], eax
+.not_a_peak:
+        pop     eax
+%endif
         movzx   eax, bx
         mov     edx, eax
         shl     edx, 16
@@ -980,6 +1131,7 @@ io_pump:
         jnz     .fill
 .done:
         wbinvd                                  ; the controller reads memory
+        OPL_LEAVE
         popad
 .out:   ret
 
@@ -1005,8 +1157,10 @@ io_audio_open:
         mov     dx, au_info
         mov     ah, 0xF0
         int     0x21
+        mov     [au_err], ax
         jc      .none
         mov     byte [au_have], 1
+        mov     word [au_err], 0xFFFF
 .none:  pop     dx
         pop     ax
         ret
@@ -1169,6 +1323,7 @@ sb_playing:     db 0
 sb_speaker:     db 0
                 align 4
 sb_starts:      dd 0                    ; transfers begun
+dma_seen:       db 0                    ; the transfer controller was watched
 dma_ff:         db 0                    ; which half of an address comes next
 dma_mask:       db 0
                 align 2
@@ -1178,7 +1333,16 @@ dma_page:       times 4 db 0
 dma_mode:       times 4 db 0
 ; what the kernel hands back: the ring, its size, where the hardware says it
 ; has got to, and the rate it plays at
+%ifdef OPL_OWN_STACK
+                align 4
+opl_esp:        dd 0                    ; the host's own stack, while the
+opl_ss:         dw 0                    ;  synthesiser has one of its own
+                align 16
+opl_stack:      times 2048 db 0
+opl_stack_top:
+%endif
 au_have:        db 0
+au_err:         dw 0xEEEE
                 align 4
 au_info:
 au_ring:        dd 0
@@ -1189,6 +1353,8 @@ au_wpos:        dd 0                    ; where we are writing, in frames
 au_spos:        dd 0                    ; the game's buffer, 16.16
 au_step:        dd 0
 au_src:         dd 0                    ; the buffer, as the bus sees it
+au_block:       dd 0                    ; where in it the block being played is
+sb_dma_len:     dd 0                    ; and how long the whole of it is
 sb_blocks:      dd 0                    ; blocks played out
 au_calls:       dd 0                    ; times the pump was asked to run
 au_ready:       dd 0                    ; times it had a stream to fill

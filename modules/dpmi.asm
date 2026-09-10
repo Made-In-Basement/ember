@@ -39,6 +39,41 @@
 %define MOD_ORG 0x1000
 [ORG MOD_ORG]
 %include "ember.inc"
+%include "oplhisyms.inc"
+
+; -----------------------------------------------------------------------------
+;  Calling the synthesiser
+; -----------------------------------------------------------------------------
+;  opl3.c is C, and a C compiler takes it for granted that a pointer means the
+;  same thing whether it came from a local or a global: one flat address
+;  space, one base for the stack and the data both.  opl3_render proves it -
+;  it declares two numbers, hands their addresses down, and the function below
+;  writes the samples back through them.
+;
+;  In the virtual-8086 monitor that assumption holds, because the monitor's
+;  ring-0 stack is inside the module and its data selector is based there too.
+;  In the DPMI host it does not: the host's ring-0 stack is a flat address in
+;  extended memory, so a pointer to a local, written through the data
+;  selector, lands somewhere else entirely.  The chip then renders into
+;  nothing and reads back whatever was at that address - which does not move,
+;  so the music comes out as a number that barely changes.  That is what
+;  silence with a small offset in it turned out to be.
+;
+;  So the synthesiser is called on a stack of the module's own, where the two
+;  bases agree.  Nothing else in the host needs this, and the monitor, whose
+;  stack already agrees, gets a pair of macros that do nothing.
+%macro OPL_ENTER 0
+        mov     [opl_ss], ss
+        mov     [opl_esp], esp
+        push    ds
+        pop     ss                              ; the stack, based where the
+        mov     esp, opl_stack_top              ;  data is
+%endmacro
+%macro OPL_LEAVE 0
+        mov     ss, [opl_ss]
+        mov     esp, [opl_esp]
+%endmacro
+
 
         MODULE_HEADER "DPMI    ", dpmi_init, dpmi_unload, dpmi_event, 0
 
@@ -88,6 +123,22 @@ RC_CS           equ 44
 RC_SP           equ 46
 RC_SS           equ 48
 RC_SIZE         equ 50
+
+; A scratch page below the excursion ring, for finding out whether a client
+; ever touches the card at all: three counts and then a ring of what was on
+; which port.  Read with tools/drtrace.py.
+; %define DRLOG 1                        ; the card's traffic, into a page of
+                                        ;  low memory - see tools/drtrace.py
+; The synthesiser is C, and C assumes the stack is reached the same way as
+; everything else.  This host's ring-0 stack is not: it is flat, while the
+; host's own data is based at the module.  See OPL_ENTER in dpmi_io.inc.
+%define OPL_OWN_STACK 1
+DRLOG_LIN       equ 0x7800                      ; traps seen, ours, undecodable
+DRRING_LIN      equ 0x7820                      ; port, value, direction
+DRRING_MAX      equ 128                         ; and it wraps: the last 128
+DRAUX_LIN       equ 0x7A40                      ; past the ring: what the card
+                                                ;  and the pump think they are
+                                                ;  doing, as of the last pump
 
 TRACE_SEG       equ 0x07C0                      ; a page of real-mode excursions
 ; Six counters in the twenty-eight bytes between the excursion ring (which
@@ -939,8 +990,19 @@ rm_resume:
 
 ; rm_terminate: the client is ending (INT 21h 4Ch or the like): let go of
 ;   everything, then run the request for real.  It does not come back.
+; io_watch_off: the breakpoints away again, before the kernel has the
+;   machine back.  Real mode is privilege level nought, so this is allowed.
+io_watch_off:
+        push    eax
+        xor     eax, eax
+        mov     dr7, eax
+        mov     dr6, eax
+        pop     eax
+        ret
+
 rm_terminate:
         mov     byte [client_active], 0
+        call    io_watch_off
         call    io_report
         call    io_audio_close                       ; what it asked the card for
         call    psp_env_restore
@@ -1003,6 +1065,7 @@ rm_print_hex32:
 ; rm_fault: an exception nobody handled.  Say where, and end the program.
 rm_fault:
         mov     byte [client_active], 0
+        call    io_watch_off
         call    io_report
         call    io_audio_close                       ; what it had asked the card for
         call    psp_env_restore
@@ -1133,4 +1196,26 @@ nest_esp:       times NEST_MAX dd 0             ; the ring-0 stack at each depar
 rm_stack:       times 8192 db 0
 rm_stack_top:
 bss_end:
+
+; =============================================================================
+;  The synthesiser
+; -----------------------------------------------------------------------------
+;  The same nano/opl/opl3.c that SB.MOD carries, linked to sit where this
+;  module's own code and data end rather than where that one's do - see the
+;  two entries in tools/build_opl.py.  Every address in it is an offset in
+;  this module, and this module's selectors are based on this module, so it
+;  works wherever the kernel puts us.
+;
+;  A DPMI client's music comes through here for the same reason a real-mode
+;  game's does: the ports it writes are watched, the registers are handed to
+;  the chip, and io_pump asks the chip for samples along with everything else
+;  that is making a sound.
+; =============================================================================
+%ifdef HAVE_OPL
+section .opl start=OPL_ORG
+opl_image:      incbin "oplhi.bin"
+                times (OPL_END - OPL_ORG) - ($ - $$) db 0
+opl_end:
+%endif
+
 section .text
