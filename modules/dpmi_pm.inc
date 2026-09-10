@@ -351,6 +351,12 @@ int_common:
 ; int_exit: back to the client with the frame as it now is
 int_exit:
         mov     esp, ebp
+        ; A client that is being taken down has had its descriptors freed, and
+        ; an interrupt arriving in that window would be handed back through a
+        ; selector that no longer describes anything: #GP inside the host, on
+        ; the POP that put it back, with the client's own CS on the frame and
+        ; nothing to be done about it.  So each one is looked at first.  EAX
+        ; is free here - POPAD is about to write it.
         pop     gs
         pop     fs
         pop     es
@@ -358,6 +364,18 @@ int_exit:
         popad
         add     esp, 8
         iretd
+
+; seg_ok: AX is a selector on its way back into a segment register.  A null
+;   one is legal as it stands; one that cannot be read is replaced by null,
+;   which loads without complaint and faults only if the client uses it -
+;   which a client whose descriptors have gone is in no position to do.
+seg_ok:
+        test    ax, 0xFFFC
+        jz      .done
+        verr    ax
+        jz      .done
+        xor     eax, eax
+.done:  ret
 
 ; =============================================================================
 ; hw_interrupt: the client's handler if it has one, else real mode's

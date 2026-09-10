@@ -128,6 +128,7 @@ RC_SIZE         equ 50
 ; ever touches the card at all: three counts and then a ring of what was on
 ; which port.  Read with tools/drtrace.py.
 ; %define DRLOG 1                        ; the card's traffic, into a page of
+                                        ;  low memory - see tools/drtrace.py                        ; the card's traffic, into a page of
                                         ;  low memory - see tools/drtrace.py
 ; The synthesiser is C, and C assumes the stack is reached the same way as
 ; everything else.  This host's ring-0 stack is not: it is flat, while the

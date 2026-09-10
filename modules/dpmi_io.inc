@@ -558,9 +558,10 @@ io_dev_out:
         call    dma_read_back
 .have_dma:
         ; the page register holds the bits the address cannot
-        movzx   ebx, byte [dma_page + 1]
+        movzx   ecx, byte [sb_chan]
+        movzx   ebx, byte [dma_page + ecx]
         shl     ebx, 16
-        movzx   eax, word [dma_addr + 2]
+        movzx   eax, word [dma_addr + ecx*2]
         or      ebx, eax
         mov     [au_src], ebx
         ; How long the buffer is, which is not how long a block is.  A program
@@ -569,7 +570,7 @@ io_dev_out:
         ; controller the whole buffer and the chip half of it, and expects the
         ; second half to follow the first.  Rewinding to the front at the end
         ; of every block would play the first half over and over.
-        movzx   eax, word [dma_count + 2]
+        movzx   eax, word [dma_count + ecx*2]
         inc     eax
         mov     [sb_dma_len], eax
         mov     dword [au_block], 0
@@ -593,6 +594,10 @@ io_dev_out:
         cmp     bl, 0x08
         jae     .dma_ctrl
         shr     ebx, 1                          ; the channel it belongs to
+        cmp     bl, 2                           ; channel 2 is the floppy and
+        je      .not_the_card                   ;  is nobody's music
+        mov     [sb_chan], bl
+.not_the_card:
         test    dl, 1
         jnz     .dma_count
         cmp     byte [dma_ff], 0
@@ -711,36 +716,98 @@ pcs_retune:
         ret
 
 ; -----------------------------------------------------------------------------
-; dma_read_back: channel 1's address and count, read out of the real chip.
-;   The halves come out in the order a flip-flop decides, so it is reset
-;   first; the game has finished programming by the time this is called.
+; dma_read_back: which channel the game is playing on, and where its buffer
+;   is.  A client at privilege level three writes the transfer controller
+;   itself and this host sees none of it, so the chip is asked afterwards -
+;   but which channel to ask is a real question.  BLASTER says one, the
+;   game's own configuration says the same one, and DMX programs channel 0
+;   regardless of both.  So all three of the eight-bit channels are read -
+;   channel 2 is the floppy and is left alone - and the one whose count
+;   agrees with the block the DSP was told about is the one being played.
 ; -----------------------------------------------------------------------------
 dma_read_back:
         push    eax
-        xor     al, al
-        out     0x0C, al                ; low half first
-        in      al, 0x02
-        mov     [dma_addr + 2], al
-        in      al, 0x02
-        mov     [dma_addr + 3], al
-        in      al, 0x83                ; the page above them
-        mov     [dma_page + 1], al
-        xor     al, al
-        out     0x0C, al
-        in      al, 0x03
-        mov     [dma_count + 2], al
-        in      al, 0x03
-        mov     [dma_count + 3], al
+        push    ebx
+        push    ecx
+        push    edx
+        movzx   ecx, word [sb_len]
+        inc     ecx                             ; the block the DSP was told
+        mov     ebx, 1                          ; what BLASTER says, first
+        call    .try
+        jnc     .chosen
+        xor     ebx, ebx                        ; what DMX does anyway
+        call    .try
+        jnc     .chosen
+        mov     ebx, 3                          ; the other eight-bit one
+        call    .try
+        jnc     .chosen
+        mov     ebx, 1                          ; nothing agreed: the usual
+        call    .read
+.chosen:
+        mov     [sb_chan], bl
+        pop     edx
+        pop     ecx
+        pop     ebx
         pop     eax
         ret
 
-; -----------------------------------------------------------------------------
+; .try: channel EBX into the shadow, CF=0 if its count agrees with the block
+;   the DSP was told to play.  A block of N bytes is a count of N-1, and a
+;   buffer is a whole number of blocks; a channel carrying something else -
+;   the floppy, or nothing at all - will not divide.
+.try:
+        call    .read
+        or      ecx, ecx
+        jz      .no
+        movzx   eax, word [dma_count + ebx*2]
+        inc     eax
+        cmp     eax, ecx
+        jb      .no                             ; shorter than one block
+        xor     edx, edx
+        div     ecx
+        or      edx, edx
+        jnz     .no
+        clc
+        ret
+.no:    stc
+        ret
+
+; .read: channel EBX out of the chip and into the shadow.  Addresses and
+;   counts come a byte at a time, low then high, and port 0Ch puts the
+;   controller's flip-flop back to the low half before each pair.
+.read:
+        push    ecx
+        mov     edx, ebx
+        add     edx, edx                        ; the address port
+        xor     al, al
+        out     0x0C, al
+        in      al, dx
+        mov     [dma_addr + ebx*2], al
+        in      al, dx
+        mov     [dma_addr + ebx*2 + 1], al
+        inc     edx                             ; and the count beside it
+        xor     al, al
+        out     0x0C, al
+        in      al, dx
+        mov     [dma_count + ebx*2], al
+        in      al, dx
+        mov     [dma_count + ebx*2 + 1], al
+        movzx   edx, byte [dma_page_port + ebx] ; the page is elsewhere, and
+        in      al, dx                          ;  the four are not in order
+        mov     [dma_page + ebx], al
+        pop     ecx
+        ret
+
+dma_page_port:  db 0x87, 0x83, 0x81, 0x82
+
 ; io_dev_in: DX = port, CL = width -> EAX = what the card would have said
 ; -----------------------------------------------------------------------------
 io_dev_in:
         push    ebx
         inc     dword [io_reads]
         xor     eax, eax
+        cmp     dx, 0x08
+        jb      io_dma_in               ; where the transfer has got to
         cmp     dx, 0x21
         je      .pic_mask               ; what the program last asked for
         cmp     dx, 0x20
@@ -1076,6 +1143,18 @@ io_pump:
         add     eax, [au_block]
         add     eax, [au_src]
         movzx   eax, byte [gs:eax]
+        cmp     al, 0x80
+        je      .byte_quiet
+        or      al, al
+        jz      .byte_zero
+        inc     dword [sb_sound_b]
+        jmp     .byte_counted
+.byte_zero:
+        inc     dword [sb_zero_b]
+        jmp     .byte_counted
+.byte_quiet:
+        inc     dword [sb_quiet_b]
+.byte_counted:
         sub     eax, 128                        ; the card's silence is 80h
         shl     eax, 8                          ; and this stream's is zero
         push    eax                             ; the loudest of them, for the
@@ -1175,9 +1254,141 @@ io_pump:
         jnz     .fill
 .done:
         wbinvd                                  ; the controller reads memory
+        call    dma_advance                     ; and it is asked where it is
         OPL_LEAVE
         popad
 .out:   ret
+
+; -----------------------------------------------------------------------------
+; The transfer controller, asked where it has got to.  Only the monitor sees
+; these: a client at privilege level three reads the real chip, which is why
+; dma_advance keeps that one honest as well.
+; -----------------------------------------------------------------------------
+io_dma_in:
+        push    ecx
+        mov     ebx, edx
+        shr     ebx, 1                          ; the channel it belongs to
+        cmp     bl, [sb_chan]
+        jne     .shadow
+        call    dma_position
+        or      ecx, ecx
+        jz      .shadow
+        test    dl, 1
+        jnz     .what_is_left
+        mov     eax, [au_src]                   ; where it would have reached
+        add     eax, ecx
+        jmp     .half
+.what_is_left:
+        mov     eax, [sb_dma_len]
+        sub     eax, ecx
+        dec     eax
+        jmp     .half
+.shadow:
+        test    dl, 1
+        jnz     .shadow_count
+        movzx   eax, word [dma_addr + ebx*2]
+        jmp     .half
+.shadow_count:
+        movzx   eax, word [dma_count + ebx*2]
+.half:
+        cmp     byte [dma_ff], 0                ; low half first, as it writes
+        jne     .high
+        mov     byte [dma_ff], 1
+        and     eax, 0xFF
+        jmp     .out
+.high:
+        mov     byte [dma_ff], 0
+        shr     eax, 8
+        and     eax, 0xFF
+.out:   pop     ecx
+        pop     ebx
+        ret
+
+; -----------------------------------------------------------------------------
+; dma_position: how far into the buffer the card has played, in bytes.
+;   Returns it in ECX; zero if nothing is playing.
+; -----------------------------------------------------------------------------
+dma_position:
+        push    eax
+        push    edx
+        xor     ecx, ecx
+        cmp     byte [sb_playing], 0
+        je      .done
+        cmp     dword [sb_dma_len], 0
+        je      .done
+        mov     eax, [au_spos]
+        shr     eax, 16
+        add     eax, [au_block]
+        xor     edx, edx
+        div     dword [sb_dma_len]
+        mov     ecx, edx
+.done:  pop     edx
+        pop     eax
+        ret
+
+; -----------------------------------------------------------------------------
+; dma_advance: move the transfer controller's address on to where the card has
+;   got to.
+;
+;   A real card is fed by that chip, so the chip's own address register says
+;   how far through the buffer the sound has been played, and a program that
+;   wants to know where to write next has only to read it.  DMX does exactly
+;   that - the trace shows it reading the address back a few instructions
+;   after it programmed it.  On this card nothing feeds anything: the chip was
+;   programmed by the game, the game's writes went straight to it, and then it
+;   sat there, because there is no card to raise a request and nothing ever
+;   transfers.  So the program asks where the sound has got to, is told
+;   "nowhere", concludes that nothing has been consumed and that there is no
+;   room to mix into, and writes silence for as long as the game runs.
+;
+;   Nothing here is transferring, so the register is ours to keep honest: it
+;   is written each time the pump runs with the position the card would have
+;   reached.  Writing it sets the base as well as the current address, which
+;   would matter if the chip ever reloaded - it cannot, because it never
+;   counts down - and the base the game gave is remembered in au_src anyway.
+; -----------------------------------------------------------------------------
+dma_advance:
+        cmp     byte [sb_playing], 0
+        je      .none
+        cmp     dword [sb_dma_len], 0
+        je      .none
+        push    eax
+        push    ebx
+        push    ecx
+        push    edx
+        movzx   ebx, byte [sb_chan]
+        mov     eax, [au_spos]
+        shr     eax, 16
+        add     eax, [au_block]
+        xor     edx, edx
+        div     dword [sb_dma_len]
+        mov     ecx, edx                        ; how far in, in bytes
+        mov     eax, ebx
+        or      al, 0x04
+        out     0x0A, al                        ; held, while it is written
+        xor     al, al
+        out     0x0C, al                        ; and the flip-flop to the low
+        mov     edx, ebx                        ;  half of what follows
+        add     edx, edx
+        mov     eax, [au_src]
+        add     eax, ecx
+        out     dx, al
+        mov     al, ah
+        out     dx, al
+        inc     edx                             ; what is left of the buffer
+        mov     eax, [sb_dma_len]
+        sub     eax, ecx
+        dec     eax
+        out     dx, al
+        mov     al, ah
+        out     dx, al
+        mov     eax, ebx
+        out     0x0A, al                        ; and let it go again
+        pop     edx
+        pop     ecx
+        pop     ebx
+        pop     eax
+.none:  ret
 
 [BITS 16]
 ; -----------------------------------------------------------------------------
@@ -1245,9 +1456,13 @@ io_say:
 io_buffer_head:
         push    bx
         push    es
-        movzx   eax, byte [dma_page + 1]
+        movzx   bx, byte [sb_chan]
+        push    bx
+        movzx   eax, byte [dma_page + bx]
         shl     eax, 16
-        movzx   ebx, word [dma_addr + 2]
+        pop     bx
+        shl     bx, 1
+        movzx   ebx, word [dma_addr + bx]
         or      eax, ebx
         cmp     eax, 0x000FFFF0                 ; real mode cannot look higher
         jae     .too_high
@@ -1324,14 +1539,19 @@ io_report:
         call    io_say
         ; where the samples are: the page register carries the top bits the
         ; address register has no room for
-        movzx   eax, byte [dma_page + 1]
+        movzx   ecx, byte [sb_chan]
+        movzx   eax, byte [dma_page + ecx]
         shl     eax, 16
-        movzx   ebx, word [dma_addr + 2]
+        movzx   ebx, word [dma_addr + ecx*2]
         or      eax, ebx
         mov     si, msg_io_buf
         call    io_say
-        movzx   eax, word [dma_count + 2]
+        movzx   ecx, byte [sb_chan]
+        movzx   eax, word [dma_count + ecx*2]
         mov     si, msg_io_cnt
+        call    io_say
+        movzx   eax, byte [sb_chan]
+        mov     si, msg_io_ch
         call    io_say
         movzx   eax, word [sb_len]
         mov     si, msg_io_len
@@ -1350,6 +1570,18 @@ io_report:
         call    io_say
         mov     eax, [au_peak]
         mov     si, msg_io_apk
+        call    io_say
+        mov     eax, [sb_sound_b]
+        mov     si, msg_io_bs
+        call    io_say
+        mov     eax, [sb_quiet_b]
+        mov     si, msg_io_bq
+        call    io_say
+        mov     eax, [sb_zero_b]
+        mov     si, msg_io_bz
+        call    io_say
+        mov     eax, [sb_dma_len]
+        mov     si, msg_io_blen
         call    io_say
         call    io_buffer_head          ; the first four bytes of it
         mov     si, msg_io_head
@@ -1389,22 +1621,27 @@ msg_io_ring:    db "SB: the audio ring at        ", 0
 msg_io_rate:    db "SB: the stream plays at      ", 0
 msg_io_w:       db "SB: writes to the card       ", 0
 msg_io_r:       db "SB: reads from it            ", 0
-msg_io_fm:      db "SB: writes to the synthesiser", 0
+msg_io_fm:      db "SB: writes to the synth      ", 0
 msg_io_go:      db "SB: transfers begun          ", 0
 msg_io_buf:     db "SB: the buffer at            ", 0
 msg_io_cnt:     db "SB: the controller's count   ", 0
+msg_io_ch:      db "SB: on transfer channel      ", 0
 msg_io_len:     db "SB: the block the DSP wants  ", 0
 msg_io_tc:      db "SB: the time constant        ", 0
 msg_io_auto:    db "SB: keeps playing by itself  ", 0
 msg_io_spk:     db "SB: the speaker is on        ", 0
 msg_io_pk:      db "SB: the loudest sample in it ", 0
-msg_io_apk:     db "SB: the loudest frame written", 0
+msg_io_apk:     db "SB: the loudest frame out    ", 0
 msg_io_head:    db "SB: the buffer begins        ", 0
+msg_io_bs:      db "SB: bytes that were a sound  ", 0
+msg_io_bq:      db "SB: bytes of quiet           ", 0
+msg_io_bz:      db "SB: bytes nobody ever wrote  ", 0
+msg_io_blen:    db "SB: the buffer is this long  ", 0
 msg_io_dr:      db "SB: debug traps              ", 0
 msg_io_drc:     db "SB: ...on the card's ports   ", 0
 msg_io_dro:     db "SB: ...that made no sense    ", 0
-msg_io_irq:     db "SB: the card's interrupt, out", 0
-msg_io_irql:    db "SB: ...owed, nobody listening", 0
+msg_io_irq:     db "SB: the card's interrupts    ", 0
+msg_io_irql:    db "SB: ...owed, nobody listened ", 0
 
 ; ---- what the card remembers ------------------------------------------------
 ; Everything from io_state to io_state_end is cleared between programs, so
@@ -1427,6 +1664,13 @@ io_reads:       dd 0
 ; ports watched.  On a machine that cannot be stopped and dumped, these three
 ; numbers are the difference between "the watch never fired" and "it fired and
 ; the card said the wrong thing", and there is no other way to tell.
+; What the buffer held, byte by byte, as the card walked through it.  A game
+; that is not making a noise writes 80h everywhere; memory nobody has written
+; is 00h; anything else is a sound.  Three numbers, and between them there is
+; no question left about whether the samples ever arrived.
+sb_quiet_b:     dd 0                    ; bytes of 80h: silence, deliberately
+sb_zero_b:      dd 0                    ; bytes of 00h: nothing was ever there
+sb_sound_b:     dd 0                    ; and bytes that were a sound
 sb_peak:        dd 0                    ; the loudest sample the card held
 au_peak:        dd 0                    ; ...and the loudest frame laid down
 dr_traps:       dd 0                    ; debug exceptions, all told
@@ -1454,6 +1698,7 @@ sb_playing:     db 0
 sb_speaker:     db 0
                 align 4
 sb_starts:      dd 0                    ; transfers begun
+sb_chan:        db 1                    ; the channel the game is playing on
 dma_seen:       db 0                    ; the transfer controller was watched
 dma_ff:         db 0                    ; which half of an address comes next
 dma_mask:       db 0
