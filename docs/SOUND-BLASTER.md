@@ -205,10 +205,62 @@ monitor clears the busy bit itself before every `LTR`.
    for USB. If that bites on the laptop, the answer is a real-mode excursion
    around that one interrupt - out of V86, run it, back in - which is what
    the DPMI host already does for everything.
-3. **DOS/4GW.** Still stops after its banner (see `DPMI-STATUS.md`). That is
-   the protected-mode path and it is now the less important of the two.
+3. **The FM ports at 220h-223h.** A Sound Blaster mirrors its synthesiser
+   at the card's own base as well as at 388h, and an OPL3 splits the two
+   halves across 220h-223h. There are four debug registers and no more, and
+   they are spent on 224h, 228h, 22Ch and 388h - so a DPMI client that
+   writes its music at 220h is not heard. Nothing tested does; the games
+   that do would need one of the four given up for them.
+4. **How loud the mixer says it is.** The client's writes to the mixer's
+   volume registers are remembered and ignored. Doom sets them to maximum,
+   which is why it does not matter yet.
+
+## The same card, for a DOS/4GW game
+
+A protected-mode client runs at IOPL 3, so that `POPF` and `IRET` can put
+its own interrupt flag back - and at IOPL 3 the permission map in the task
+state segment is not consulted at all, so the fault that the monitor is
+built on never arrives. The debug registers answer to nobody's privilege
+level, so they do the watching instead: four I/O breakpoints, `CR4.DE` set,
+and `#DB` on 224h, 228h, 22Ch and 388h. The trap comes *after* the
+instruction rather than before it, which costs nothing - for an `OUT` the
+value is still in the register, and for an `IN` the program has latched FFh
+from a port with nothing on it and the answer is put into the frame
+afterwards.
+
+Three things had to follow it before a game made a sound:
+
+- **The synthesiser had to be in the module.** `SB.MOD` carries `opl3.c`
+  linked flat at an offset chosen for `SB.MOD`; `DPMI.MOD` is half again as
+  large. `tools/build_opl.py` builds it twice now, once at the address each
+  module's own code ends at.
+- **It had to be called on a stack it could trust.** `opl3_render` declares
+  two locals and hands their addresses down to be written through, which is
+  what any C compiler does and what any flat model makes safe. This host is
+  not flat: its ring-0 stack is a linear address in extended memory and its
+  data is based at the module, so a pointer to a local, written through the
+  data selector, landed somewhere else. The music came out as a number that
+  hardly moved - silence with a small offset in it. `OPL_ENTER`, in
+  `dpmi.asm`, gives it a stack of the module's own.
+- **The card's own interrupt had to be raised.** `push_int` is `deliver_int`
+  without the departure, so the card's vector can be pushed in front of the
+  timer tick that noticed the block had finished. The client enters its
+  handler for the card first and the timer's after, which is the order a
+  real machine would have given them. Without it DMX programmed one block,
+  waited to be told it had played, and never asked for another.
+
+The transfer controller is not watched and does not need to be: a client at
+IOPL 3 writes the real 8237, so when the DSP is told to play, the address
+and the count are read back out of the chip. They are read back on every
+start, not once - a game moves its buffer, and a shadow that was right once
+plays whatever is at the old address at full volume.
+
+Defining `DRLOG` in `modules/dpmi.asm` makes the host keep a page of what
+touched the card; `tools/drtrace.py` reads it. It is off by default: the
+page is a kilobyte of low memory that nothing has promised.
 
 ## What is ruled out
 
 - Nothing, any more. Real-mode games were the thing this could not reach,
-  and the monitor is how it reaches them.
+  and the monitor is how it reaches them. Protected-mode ones are reached
+  by the debug registers instead.
