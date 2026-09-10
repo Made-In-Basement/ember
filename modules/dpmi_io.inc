@@ -154,6 +154,12 @@ io_card_reset:
         rep     stosw
         mov     byte [opl_timer_flags], 0xC0
         mov     byte [pic_mask], 0xFF
+        ; A real card comes up with its output switched off and waits to be
+        ; told D1h.  Nearly every program does tell it, and the ones that do
+        ; not are relying on a mixer that was never off in the first place -
+        ; so this one comes up on.  Silence because nobody said the magic
+        ; word is the worse of the two ways to be wrong.
+        mov     byte [sb_speaker], 1
         mov     eax, [au_lead_start]            ; nought would fill nothing
         mov     [au_lead], eax
         pop     es
@@ -486,6 +492,21 @@ io_dev_out:
         je      .expect1
         cmp     al, 0x10                ; a sample straight to the speaker
         je      .expect1
+        cmp     al, 0xE4                ; the test register, written
+        je      .expect1
+        cmp     al, 0x38                ; a byte out of the MIDI port
+        je      .expect1
+        ; A command whose parameters are not counted is worse than a command
+        ; that is not understood: the bytes behind it are then read as
+        ; commands themselves, and among the values a length or a period can
+        ; take is D3h, which switches the output off.  A game whose sound
+        ; stopped for no reason stopped here.
+        cmp     al, 0x80                ; a silence of so many samples
+        je      .expect2
+        cmp     al, 0x74                ; four-bit ADPCM, and its relatives
+        jb      .done
+        cmp     al, 0x77
+        jbe     .expect2
         jmp     .done
 .expect2:
         mov     byte [dsp_expect], 2
@@ -1057,6 +1078,16 @@ io_pump:
         movzx   eax, byte [gs:eax]
         sub     eax, 128                        ; the card's silence is 80h
         shl     eax, 8                          ; and this stream's is zero
+        push    eax                             ; the loudest of them, for the
+        or      eax, eax                        ;  report: a buffer of silence
+        jge     .sample_up                      ;  and a speaker switched off
+        neg     eax                             ;  look the same from outside
+.sample_up:
+        cmp     eax, [sb_peak]
+        jbe     .sample_same
+        mov     [sb_peak], eax
+.sample_same:
+        pop     eax
         cmp     byte [sb_speaker], 0            ; ...but muted if it is muted
         je      .no_sample
         mov     ebx, eax
@@ -1093,6 +1124,17 @@ io_pump:
         jge     .not_quiet
         mov     ebx, -32768
 .not_quiet:
+        push    eax
+        mov     eax, ebx
+        or      eax, eax
+        jge     .frame_up
+        neg     eax
+.frame_up:
+        cmp     eax, [au_peak]
+        jbe     .frame_same
+        mov     [au_peak], eax
+.frame_same:
+        pop     eax
 %ifdef DRLOG
         push    eax                             ; the loudest frame so far
         mov     eax, ebx
@@ -1195,6 +1237,32 @@ io_say:
         SVC     SVC_CRLF
         ret
 
+; io_buffer_head: the first four bytes of the game's buffer, as the card would
+;   have read them.  80808080h is a buffer full of silence, which is what a
+;   game writes when nothing is making a noise; 00000000h is a buffer nothing
+;   ever wrote, which means the address came back wrong.  Told apart, they are
+;   two different faults with one symptom.
+io_buffer_head:
+        push    bx
+        push    es
+        movzx   eax, byte [dma_page + 1]
+        shl     eax, 16
+        movzx   ebx, word [dma_addr + 2]
+        or      eax, ebx
+        cmp     eax, 0x000FFFF0                 ; real mode cannot look higher
+        jae     .too_high
+        mov     bx, ax
+        and     bx, 0x000F
+        shr     eax, 4
+        mov     es, ax
+        mov     eax, [es:bx]
+        jmp     .done
+.too_high:
+        or      eax, -1
+.done:  pop     es
+        pop     bx
+        ret
+
 io_report:
         cmp     dword [io_writes], 0
         jne     .say
@@ -1274,6 +1342,18 @@ io_report:
         movzx   eax, byte [sb_auto]
         mov     si, msg_io_auto
         call    io_say
+        movzx   eax, byte [sb_speaker]
+        mov     si, msg_io_spk
+        call    io_say
+        mov     eax, [sb_peak]
+        mov     si, msg_io_pk
+        call    io_say
+        mov     eax, [au_peak]
+        mov     si, msg_io_apk
+        call    io_say
+        call    io_buffer_head          ; the first four bytes of it
+        mov     si, msg_io_head
+        call    io_say
 .none:
         cmp     dword [dr_traps], 0
         je      .no_watch
@@ -1316,6 +1396,10 @@ msg_io_cnt:     db "SB: the controller's count   ", 0
 msg_io_len:     db "SB: the block the DSP wants  ", 0
 msg_io_tc:      db "SB: the time constant        ", 0
 msg_io_auto:    db "SB: keeps playing by itself  ", 0
+msg_io_spk:     db "SB: the speaker is on        ", 0
+msg_io_pk:      db "SB: the loudest sample in it ", 0
+msg_io_apk:     db "SB: the loudest frame written", 0
+msg_io_head:    db "SB: the buffer begins        ", 0
 msg_io_dr:      db "SB: debug traps              ", 0
 msg_io_drc:     db "SB: ...on the card's ports   ", 0
 msg_io_dro:     db "SB: ...that made no sense    ", 0
@@ -1343,6 +1427,8 @@ io_reads:       dd 0
 ; ports watched.  On a machine that cannot be stopped and dumped, these three
 ; numbers are the difference between "the watch never fired" and "it fired and
 ; the card said the wrong thing", and there is no other way to tell.
+sb_peak:        dd 0                    ; the loudest sample the card held
+au_peak:        dd 0                    ; ...and the loudest frame laid down
 dr_traps:       dd 0                    ; debug exceptions, all told
 dr_ours:        dd 0                    ; ...that were one of the card's ports
 dr_odd:         dd 0                    ; ...that could not be read back
