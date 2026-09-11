@@ -37,10 +37,26 @@ To test without a stick:
 
 boots it under EDK II in QEMU and prints what the console said.
 
+## What works, under EDK II in QEMU
+
+Boot to the prompt, the keyboard, scrolling, `DIR` and `MEM`, reads and
+writes to the disk (a write to `EMBER.LOG` changes exactly the two sectors it
+should in the copy), the DPMI host with all twelve of `DPMITEST`'s checks,
+and `EMBER` declining cleanly with "no true-colour mode with a linear
+framebuffer".
+
 ## What it is, and is not, yet
 
 The disk is a copy.  Anything written — `EMBER.LOG`, saved files — lasts until
 the machine is turned off.  The stick itself is never written.
+
+The V86 monitor (`LOAD SB`) is not usable yet.  Its rule for a real-mode
+handler that touches `CR0` or the GDT — which is exactly how this shim draws
+— is to stand down for good, so a program that prints anything runs the rest
+of the way natively and its card is never emulated.  The fix belongs in the
+monitor: a real-mode excursion for BIOS vectors, out of V86 and back, using
+its own `v86_leave` and `v86_enter`.  Until then `HELLO` prints and `SBREAL`
+reports "no monitor", both correctly.
 
 The screen is a text console.  Programs that draw into VGA memory at `A000h`
 — every DOS game — get nothing on machines without a VGA core, which is every
