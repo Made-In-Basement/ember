@@ -262,6 +262,7 @@ rm_entry:
         call    bda_init
         call    ivt_init
         call    screen_init
+        call    kb_drain
         sti
 
         mov     si, msg_banner
@@ -325,6 +326,40 @@ pic_init:
         out     0x22, al
         xor     al, al
         out     0x23, al
+        ret
+
+; -----------------------------------------------------------------------------
+; kb_drain: empty the keyboard controller's output buffer before its line is
+;   unmasked.  A byte the firmware left unread keeps the line asserted, the
+;   interrupt is edge triggered, and nothing further would ever be reported:
+;   a keyboard that works one boot and not the next.  The controller is also
+;   told, in so many words, to enable the keyboard, in case the firmware's
+;   USB emulation left it otherwise.
+; -----------------------------------------------------------------------------
+kb_drain:
+        push    ax
+        push    cx
+        mov     cx, 64
+.drain: in      al, 0x64
+        test    al, 0x01                ; something to read?
+        jz      .empty
+        in      al, 0x60
+        loop    .drain
+.empty: mov     cx, 0xFFFF
+.ready: in      al, 0x64
+        test    al, 0x02                ; ready for a command?
+        jz      .send
+        loop    .ready
+.send:  mov     al, 0xAE                ; enable the keyboard interface
+        out     0x64, al
+        mov     cx, 0xFFFF
+.ready2:
+        in      al, 0x64
+        test    al, 0x02
+        jz      .done
+        loop    .ready2
+.done:  pop     cx
+        pop     ax
         ret
 
 pit_init:
@@ -457,11 +492,100 @@ int08:
         mov     byte [BDA_TICKOVF], 1
 .no_wrap:
         int     0x1C
+        ; ---- the heartbeat, while a machine is being understood ----
+        ; Once a second, into the top right corner: ticks, keyboard
+        ; interrupts, the last scan code, and whether the console has the
+        ; screen.  A keyboard that has gone quiet is one of four different
+        ; faults, and this is how they are told apart from a photograph.
+        inc     byte [cs:hb_count]
+        cmp     byte [cs:hb_count], 18
+        jb      .no_beat
+        mov     byte [cs:hb_count], 0
+        cmp     byte [cs:gfx_mode], 0
+        jne     .no_beat
+        call    heartbeat
+.no_beat:
         mov     al, 0x20
         out     0x20, al
         pop     ax
         pop     ds
         iret
+
+; heartbeat: "T:tttttt K:kkkk S:ss" into row 0, columns 60-79, and drawn.
+;   Called from the timer with DS = 0.
+heartbeat:
+        push    ds
+        push    es
+        push    fs
+        pusha
+        xor     ax, ax
+        mov     fs, ax                  ; the BIOS data area, through FS:
+        push    cs                      ;  STOSW writes through ES, which
+        pop     ds                      ;  has to be the cells
+        push    cs
+        pop     es
+        mov     di, cells + 60 * 2      ; row 0, column 60
+        mov     ah, 0x70                ; black on grey: unmistakable
+        mov     al, 'T'
+        stosw
+        mov     al, ':'
+        stosw
+        mov     eax, [fs:BDA_TICKS]
+        mov     cx, 6
+        call    hb_hex
+        mov     al, ' '
+        mov     ah, 0x70
+        stosw
+        mov     al, 'K'
+        stosw
+        mov     al, ':'
+        stosw
+        movzx   eax, word [kb_irqs]
+        mov     cx, 4
+        call    hb_hex
+        mov     al, ' '
+        mov     ah, 0x70
+        stosw
+        mov     al, 'S'
+        stosw
+        mov     al, ':'
+        stosw
+        movzx   eax, byte [kb_last]
+        mov     cx, 2
+        call    hb_hex
+        mov     byte [dr_col], 60
+        mov     byte [dr_row], 0
+        mov     word [dr_n], 20
+        call    pm_draw
+        popa
+        pop     fs
+        pop     es
+        pop     ds
+        ret
+
+; hb_hex: the low CX nibbles of EAX as hex digits at DS:DI, attribute 70h
+hb_hex:
+        push    bx
+        mov     bx, cx
+.digit: dec     bx
+        push    eax
+        push    cx
+        mov     cx, bx
+        shl     cx, 2
+        shr     eax, cl
+        and     al, 0x0F
+        add     al, '0'
+        cmp     al, '9'
+        jbe     .have
+        add     al, 7
+.have:  mov     ah, 0x70
+        stosw
+        pop     cx
+        pop     eax
+        or      bx, bx
+        jnz     .digit
+        pop     bx
+        ret
 
 ; -----------------------------------------------------------------------------
 ; INT 09h: the keyboard.  Scan codes in, keystrokes into the BIOS buffer, in
@@ -477,6 +601,8 @@ int09:
         xor     ax, ax
         mov     es, ax
         in      al, 0x60
+        inc     word [kb_irqs]          ; for the heartbeat
+        mov     [kb_last], al
 
         cmp     byte [kb_skip], 0       ; the tail of a Pause sequence
         je      .not_skipping
@@ -2430,6 +2556,8 @@ origin_y:       dd 0
 scale:          db 1
 serial_on:      db 0
 gfx_mode:       db 0                    ; a program has the framebuffer
+hb_count:       db 0                    ; ticks since the last heartbeat
+kb_last:        db 0                    ; the last scan code that arrived
 kb_e0:          db 0
 kb_skip:        db 0
 disk_status:    db 0
@@ -2451,6 +2579,7 @@ dr_row:         db 0
 cursor_col:     db 0
 cursor_row:     db 0
                 align 2
+kb_irqs:        dw 0                    ; keyboard interrupts, for the heartbeat
 dr_n:           dw 0
 ws_seg:         dw 0
 ws_off:         dw 0

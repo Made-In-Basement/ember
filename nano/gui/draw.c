@@ -41,16 +41,22 @@ static int pick_mode(int want_w, int want_h, struct vbe_mode *best)
 {
     struct vbe_info info;
     struct vbe_mode m;
-    int found = -1, best_score = -1, i;
+    int found = -1, best_score = -1, i, pass;
 
     if (sys_vbe_info(&info) != 0)
         return -1;
+    /* Two passes: first the modes no bigger than we asked for, and if none
+       fits, whatever there is.  A firmware that offers one mode - the panel's
+       own - offers it whether or not it is bigger than we would have chosen,
+       and a desktop that is too large is a desktop; one that never appears
+       is not. */
+    for (pass = 0; pass < 2 && found < 0; pass++)
     for (i = 0; i < info.mode_count; i++) {
         int mode = info.modes[i], score;
         if (sys_vbe_mode(mode, &m) != 0) continue;
         if (!m.framebuffer) continue;                   /* must be linear */
         if (m.bpp != 32 && m.bpp != 24 && m.bpp != 16) continue;
-        if (m.width > want_w || m.height > want_h) continue;
+        if (pass == 0 && (m.width > want_w || m.height > want_h)) continue;
         if (m.width < 640 || m.height < 480) continue;
         /* A screen that is not the shape of the panel gets stretched to fit
            it, so a widescreen mode is worth more than a bigger square one. */
