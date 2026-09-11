@@ -1750,6 +1750,11 @@ screen_clear:
         mov     es, ax
         mov     word [es:BDA_CURSOR], 0
         pop     es
+        ; The text area is smaller than the panel, and a program that has
+        ; just given the screen back leaves its picture in the margin
+        ; around it.  A mode set is the moment to black the whole thing.
+        mov     word [pm_routine], clear32
+        call    pm_call
         call    draw_all
         pop     di
         pop     cx
@@ -2338,6 +2343,37 @@ screen_init:
         shl     edx, 13
         or      eax, edx
         or      eax, 0x83
+        ; ---- write-combining, or every pixel is a bus transaction ----
+        ; What the framebuffer's writes cost is decided by its cache type,
+        ; and that comes from the firmware's MTRRs for its real physical
+        ; address - which nobody here can improve on, and which is usually
+        ; "uncached".  The page attribute table can override that per page:
+        ; entry 1 of the PAT, the one a page selects with its PWT bit, is
+        ; redefined as write-combining, and the window's entries set PWT.
+        ; Nothing else in this machine uses paging, so nothing else is
+        ; affected.  On a desktop that copies 24 MB a frame, this is the
+        ; difference between a lag and a machine.
+        push    eax
+        push    ecx
+        push    edx
+        mov     eax, 1
+        cpuid
+        test    edx, 1 << 16            ; the PAT is there (it always is)
+        jz      .no_pat
+        mov     ecx, 0x277              ; IA32_PAT
+        rdmsr
+        and     eax, 0xFFFF00FF         ; entry 1 (PWT): from write-through
+        or      eax, 0x00000100         ;  to write-combining
+        wrmsr
+        mov     byte [pat_wc], 1
+.no_pat:
+        pop     edx
+        pop     ecx
+        pop     eax
+        cmp     byte [pat_wc], 0
+        je      .no_wc_bit
+        or      eax, 0x08               ; PWT: PAT entry 1, write-combining
+.no_wc_bit:
         mov     ebx, [h_fbwin]          ; its entries in the directory
         shr     ebx, 22
         shl     ebx, 2
@@ -2557,6 +2593,7 @@ scale:          db 1
 serial_on:      db 0
 gfx_mode:       db 0                    ; a program has the framebuffer
 hb_count:       db 0                    ; ticks since the last heartbeat
+pat_wc:         db 0                    ; PAT entry 1 is write-combining
 kb_last:        db 0                    ; the last scan code that arrived
 kb_e0:          db 0
 kb_skip:        db 0
