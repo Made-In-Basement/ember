@@ -174,6 +174,21 @@ run_nx32:
         mov     [nx_pic2_mask], al
         mov     byte [nx_running], 1
         call    kb_flush
+        ; ---- Ember 2.0: a BIOS that keeps the framebuffer behind paging ----
+        ; On a machine with no BIOS, the stub's shim stands in for one, and
+        ; the only screen it has is a framebuffer above four gigabytes that
+        ; it reaches through a page-directory window.  It offers that window
+        ; as the VESA framebuffer, and this call says where the directory
+        ; is; a program then runs with it loaded, and the address the VESA
+        ; call gave it works.  A real BIOS says no here and nothing changes.
+        mov     dword [nx_cr3], 0
+        mov     ax, 0xE2B0
+        int     0x15
+        jc      .no_window
+        cmp     eax, 0x32424D45                 ; "EMB2"
+        jne     .no_window
+        mov     [nx_cr3], ebx
+.no_window:
         ; ---- go ----
         cli
         call    pic_remap_pm
@@ -195,6 +210,22 @@ run_nx32:
 ; 32-bit side (code segment based at KBASE: labels are usable as EIPs)
 ; =============================================================================
 [BITS 32]
+; paging_on: the window's page directory, if there is one.  Identity for
+;   everything but the window, so nothing else notices.
+%macro PAGING_ON 0
+        mov     eax, [KBASE + nx_cr3]
+        or      eax, eax
+        jz      %%none
+        mov     cr3, eax
+        mov     eax, cr4
+        or      eax, 1 << 4                     ; PSE: the directory's pages are 4 MB
+        mov     cr4, eax
+        mov     eax, cr0
+        or      eax, 0x80000000
+        mov     cr0, eax
+%%none:
+%endmacro
+
 pm_start:
         mov     ax, SEL_KDATA32
         mov     ds, ax
@@ -202,6 +233,7 @@ pm_start:
         mov     ss, ax
         mov     fs, ax
         mov     gs, ax
+        PAGING_ON
         mov     esp, [KBASE + nx_stack_top]
         ; FPU on (Doom uses x87 in a few places)
         mov     eax, cr0
@@ -373,6 +405,7 @@ pm_return:
         mov     ss, ax
         mov     fs, ax
         mov     gs, ax
+        PAGING_ON
         mov     esp, [KBASE + pm_esp]
         ; A key pressed during the excursion sat in the keyboard controller
         ; with its interrupt masked, and re-initialising the controller just
@@ -400,6 +433,8 @@ to_real_mode:                                   ; CS = SEL_KCODE16 here
         mov     fs, ax
         mov     gs, ax
         mov     eax, cr0
+        and     eax, 0x7FFFFFFF                 ; paging off first, if it was
+        mov     cr0, eax                        ;  on: real mode cannot have it
         and     al, 0xFE
         mov     cr0, eax
         jmp     KERNEL_SEG:rm_entry
@@ -736,6 +771,8 @@ idtr_real:
 nx_running:     db 0
 nx_pic1_mask:   db 0
 nx_pic2_mask:   db 0
+                align 4
+nx_cr3:         dd 0                            ; Ember 2.0's page directory, or nought
 exc_vec:        db 0
                 align 4
 exc_eip:        dd 0

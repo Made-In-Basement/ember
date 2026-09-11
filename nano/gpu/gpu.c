@@ -156,8 +156,16 @@ static int find_device(void)
     say("GGC %08X: graphics memory %u MB stolen at %08X, GGTT %u MB (%u pages of address space)",
         ggc, stolen_bytes >> 20, stolen_base, ggtt_bytes >> 20, ggtt_bytes / 8);
     if (!(cmd & 2) || !ggtt_bytes) { say("memory decoding off or no GGTT: stopping"); return -1; }
-    if ((id >> 16) == 0x1616 || (id >> 16) == 0x161E) say("that is HD Graphics 5300, Broadwell GT2: the one we expect");
-    else say("device %04X is not the Broadwell GT2 this program was written against; going on carefully", id >> 16);
+    if ((id >> 16) != 0x1616 && (id >> 16) != 0x161E) {
+        /* Every register offset below was read off a Broadwell.  A later
+           generation keeps the names and moves the furniture, and "going on
+           carefully" on a machine that belongs to someone's employer is not
+           careful enough: the desktop copies frames into the framebuffer
+           instead, which is slower and certain. */
+        say("device %04X is not the Broadwell GT2 this program was written against: leaving it alone", id >> 16);
+        return -1;
+    }
+    say("that is HD Graphics 5300, Broadwell GT2: the one we expect");
     mmio = (volatile uint32_t *)bar0;
     return 0;
 }

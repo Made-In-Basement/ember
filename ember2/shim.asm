@@ -32,8 +32,12 @@
 ;  entry point and to fill in what it knows.
 ; =============================================================================
 
-FBWIN           equ 0xF8000000          ; linear window on the framebuffer
+; The window on the framebuffer is eight 4 MB pages of linear address space.
+; Where it sits is the stub's choice, in h_fbwin: a block of RAM it set aside
+; and nothing else will ever use, so that the physical addresses the window
+; hides are nobody's - not a device's registers, not Ember's memory.
 FBWIN_PDES      equ 8                   ; eight 4 MB pages: 32 MB of window
+VBE_MODE        equ 0x0140              ; the one mode the VESA calls offer
 COLS            equ 80
 ROWS            equ 25
 SHIFT_MAX       equ 8                   ; the screen is at most 8x magnified
@@ -92,8 +96,11 @@ h_low_top:      dd 0                    ; +48  end of conventional memory
 h_ext_end:      dd 0                    ; +52  end of memory above 1 MB
 h_e820_n:       dd 0                    ; +56  entries in the table below
 h_phys:         dd 0                    ; +60  where this is (entry64 writes)
-                align 8
-h_e820:         times 32 * 24 db 0      ; +64  base, length, type
+h_fbwin:        dd 0                    ; +64  the window: 32 MB of the stub's
+                                        ;  own RAM, 4 MB aligned, whose linear
+                                        ;  addresses lead to the framebuffer
+                dd 0, 0, 0              ; +68  reserved
+h_e820:         times 32 * 24 db 0      ; +80  base, length, type
 
 ; =============================================================================
 ;  Leaving long mode
@@ -887,7 +894,19 @@ int15:
         je      .wait
         cmp     ah, 0x4F
         je      .intercept
+        cmp     ax, 0xE2B0
+        je      .ember2
         jmp     .no
+.ember2:
+        ; Ember 2.0's own: "EMB2" in EAX, the page directory that maps the
+        ; framebuffer's window in EBX, the window in ECX, its size in EDX.
+        ; The kernel's 32-bit runtime asks once, and runs its programs with
+        ; that directory loaded, so the address the VESA call gave them works.
+        mov     eax, 0x32424D45
+        mov     ebx, [pagedir_phys]
+        mov     ecx, [h_fbwin]
+        mov     edx, FBWIN_PDES << 22
+        jmp     .yes
 .e801:  ; AX = KB between 1 and 16 MB, BX = 64 KB blocks above 16 MB
         mov     eax, [h_ext_end]
         sub     eax, 0x100000
@@ -1326,13 +1345,14 @@ int10:
         jmp     .out                    ; palettes, pages, pens: nothing to do
 
 .set_mode:
-        ; Text modes are all the one mode here.  A graphics mode is not
+        ; Text modes are all the one mode here.  A VGA graphics mode is not
         ; something this machine has, and the honest thing is to leave the
         ; mode where it was - a caller that checks with 0Fh will see that it
         ; did not take, which is how a BIOS without that mode would answer.
         and     al, 0x7F
         cmp     al, 3
         ja      .out
+        mov     byte [gfx_mode], 0      ; the console has the screen again
         call    screen_clear
         jmp     .out
 .cursor_shape:
@@ -1410,7 +1430,113 @@ int10:
         mov     al, 0x1A
         mov     bx, 0x0008              ; a colour VGA, on its own
         jmp     .out
-.vesa:  mov     ax, 0x014F              ; "there is no VESA here": AH != 0
+.vesa:  ; VESA, with exactly one mode: the one the firmware left the panel
+        ; in.  Its "physical" address is the window, which a program can use
+        ; the moment it runs with paging on - and the kernel's 32-bit runtime
+        ; does, once INT 15h E2B0h has told it where the page directory is.
+        cmp     al, 0x00
+        je      .vbe_info
+        cmp     al, 0x01
+        je      .vbe_mode
+        cmp     al, 0x02
+        je      .vbe_set
+        cmp     al, 0x03
+        je      .vbe_get
+        mov     ax, 0x014F              ; anything else: AH != 0 is "failed"
+        jmp     .out
+.vbe_info:
+        ; ES:DI -> 512 bytes, cleared by the caller
+        mov     dword [es:di], "VESA"
+        mov     word [es:di + 4], 0x0200
+        mov     word [es:di + 6], vbe_oem
+        mov     [es:di + 8], cs
+        mov     word [es:di + 14], vbe_modes
+        mov     [es:di + 16], cs
+        mov     eax, [h_fb_h]
+        imul    eax, [h_fb_pitch]
+        shr     eax, 14                 ; bytes / 64 KB (4 bytes a pixel)
+        cmp     eax, 0xFFFF
+        jbe     .vbe_mem_ok
+        mov     eax, 0xFFFF
+.vbe_mem_ok:
+        mov     [es:di + 18], ax
+        mov     word [es:di + 22], vbe_oem
+        mov     [es:di + 24], cs
+        mov     word [es:di + 26], vbe_oem
+        mov     [es:di + 28], cs
+        mov     word [es:di + 30], vbe_oem
+        mov     [es:di + 32], cs
+        mov     ax, 0x004F
+        jmp     .out
+.vbe_mode:
+        ; CX = the mode; ES:DI -> 256 bytes, cleared by the caller
+        and     cx, 0x3FFF
+        cmp     cx, VBE_MODE
+        jne     .vbe_no_such
+        mov     word [es:di], 0x009B    ; supported, colour, graphics, linear
+        mov     eax, [h_fb_pitch]
+        shl     eax, 2
+        mov     [es:di + 16], ax        ; bytes per scan line
+        mov     eax, [h_fb_w]
+        mov     [es:di + 18], ax
+        mov     eax, [h_fb_h]
+        mov     [es:di + 20], ax
+        mov     byte [es:di + 22], 8    ; a character cell, for what it is worth
+        mov     byte [es:di + 23], 16
+        mov     byte [es:di + 24], 1    ; one plane
+        mov     byte [es:di + 25], 32   ; bits per pixel
+        mov     byte [es:di + 26], 1    ; one bank
+        mov     byte [es:di + 27], 6    ; direct colour
+        mov     byte [es:di + 30], 1
+        mov     byte [es:di + 31], 8    ; red: eight bits, at...
+        mov     byte [es:di + 33], 8    ; green
+        mov     byte [es:di + 34], 8    ;   ...at 8
+        mov     byte [es:di + 35], 8    ; blue
+        mov     byte [es:di + 37], 8    ; the spare byte
+        mov     byte [es:di + 38], 24
+        cmp     dword [h_fb_bgr], 0
+        je      .vbe_rgb
+        mov     byte [es:di + 32], 16   ; B G R: red is the third byte
+        mov     byte [es:di + 36], 0
+        jmp     .vbe_masks_done
+.vbe_rgb:
+        mov     byte [es:di + 32], 0    ; R G B: red is the first
+        mov     byte [es:di + 36], 16
+.vbe_masks_done:
+        mov     eax, [fbwin_base]
+        mov     [es:di + 40], eax       ; where to write: the window
+        mov     eax, [h_fb_pitch]
+        shl     eax, 2
+        mov     [es:di + 50], ax        ; the same, the VBE 3 way
+        mov     ax, 0x004F
+        jmp     .out
+.vbe_no_such:
+        mov     ax, 0x014F
+        jmp     .out
+.vbe_set:
+        mov     ax, bx
+        and     ax, 0x3FFF
+        cmp     ax, VBE_MODE
+        je      .vbe_set_ours
+        cmp     ax, 3                   ; text, by the VESA door
+        jne     .vbe_no_such
+        mov     byte [gfx_mode], 0
+        call    screen_clear
+        mov     ax, 0x004F
+        jmp     .out
+.vbe_set_ours:
+        ; The panel is already in it.  All that changes is that the console
+        ; keeps its hands off the framebuffer until text mode is asked for.
+        mov     byte [gfx_mode], 1
+        mov     ax, 0x004F
+        jmp     .out
+.vbe_get:
+        mov     bx, 3
+        cmp     byte [gfx_mode], 0
+        je      .vbe_get_done
+        mov     bx, VBE_MODE | 0x4000
+.vbe_get_done:
+        mov     ax, 0x004F
         jmp     .out
 .out:   pop     es
         pop     ds
@@ -1825,9 +1951,13 @@ pm_copy:
         mov     word [pm_routine], copy32
         jmp     pm_call
 pm_draw:
+        cmp     byte [gfx_mode], 0      ; a program has the screen: the cells
+        jne     .not_now                ;  are kept, but not drawn
         call    pm_draw_refresh         ; where the cursor is, for draw32
         mov     word [pm_routine], draw32
         jmp     pm_call
+.not_now:
+        ret
 
 pm_call:
         pushf
@@ -2075,14 +2205,18 @@ screen_init:
         mov     edx, [h_fb_base + 4]
         mov     ebx, eax
         and     ebx, 0x3FFFFF           ; the part below the alignment
-        add     ebx, FBWIN
+        add     ebx, [h_fbwin]
         mov     [fbwin_base], ebx
         and     eax, 0xFFC00000
         and     edx, 0xFF
         shl     edx, 13
         or      eax, edx
         or      eax, 0x83
-        mov     di, pagedir + (FBWIN >> 22) * 4
+        mov     ebx, [h_fbwin]          ; its entries in the directory
+        shr     ebx, 22
+        shl     ebx, 2
+        add     bx, pagedir
+        mov     di, bx
         mov     cx, FBWIN_PDES
 .win:   mov     [di], eax
         add     di, 4
@@ -2295,6 +2429,7 @@ origin_x:       dd 0
 origin_y:       dd 0
 scale:          db 1
 serial_on:      db 0
+gfx_mode:       db 0                    ; a program has the framebuffer
 kb_e0:          db 0
 kb_skip:        db 0
 disk_status:    db 0
@@ -2341,6 +2476,10 @@ cga:            db 0x00,0x00,0x00, 0x00,0x00,0xAA, 0x00,0xAA,0x00, 0x00,0xAA,0xA
                 db 0xAA,0x00,0x00, 0xAA,0x00,0xAA, 0xAA,0x55,0x00, 0xAA,0xAA,0xAA
                 db 0x55,0x55,0x55, 0x55,0x55,0xFF, 0x55,0xFF,0x55, 0x55,0xFF,0xFF
                 db 0xFF,0x55,0x55, 0xFF,0x55,0xFF, 0xFF,0xFF,0x55, 0xFF,0xFF,0xFF
+
+vbe_oem:        db "Ember 2.0", 0
+                align 2
+vbe_modes:      dw VBE_MODE, 0xFFFF
 
 msg_banner:     db 13, 10, "Ember 2.0 - UEFI stub.  Disk image ", 0
 msg_banner2:    db " MB in memory, ", 0

@@ -172,8 +172,10 @@ static EFI_GUID GUID_FILE_INFO =
 #define SH_LOW_TOP  48
 #define SH_EXT_END  52
 #define SH_E820_N   56
-#define SH_E820     64
+#define SH_FBWIN    64
+#define SH_E820     80
 #define E820_MAX    32
+#define WIN_BYTES   0x2000000ULL        /* the window: eight 4 MB pages */
 
 #define SHIM_ALLOC  0x10000             /* 64 KB: room for the shim, aligned */
 #define EXT_CAP     0x80000000ULL       /* what Ember is known to cope with */
@@ -342,6 +344,8 @@ static int read_image(FILE_PROTOCOL *f, u8 *to, u64 size)
 }
 
 /* ---- the E820 table Ember and its programs may ask for ------------------ */
+static u64 win_alloc;                   /* the window's RAM: ours, unused */
+
 static u32 build_e820(u8 *sh, u64 low_top, u64 rd_base, u64 rd_size,
                       u64 shim_base)
 {
@@ -367,6 +371,7 @@ static u32 build_e820(u8 *sh, u64 low_top, u64 rd_base, u64 rd_size,
         /* our own two allocations are not Ember's */
         if (s < rd_base + rd_size && e > rd_base) t = 2;
         if (s < shim_base + SHIM_ALLOC && e > shim_base) t = 2;
+        if (s < win_alloc + WIN_BYTES + 0x400000 && e > win_alloc) t = 2;
         if (n > 2 && s == last_end && t == last_type) {
             /* extends the previous entry */
             u64 len; memcpy(&len, sh + SH_E820 + (n - 1) * 24 + 8, 8);
@@ -452,10 +457,23 @@ EFI_STATUS EFIAPI EfiMain(EFI_HANDLE image, EFI_SYSTEM_TABLE *st)
     }
     ext_end = run;
     if (rd_base >= 0x100000 && rd_base < run) ext_end = rd_base;
+
+    /* The window: 32 MB of linear address space whose page-directory
+       entries lead to the framebuffer.  Whatever physical addresses those
+       are, nothing must live at them, because with paging on they are
+       unreachable - so they are RAM of our own, set aside here and never
+       used.  36 MB, so that a 4 MB-aligned 32 MB fits inside. */
+    win_alloc = 0xFFFFFFFF;
+    if (BS->AllocatePages(1, 2, (WIN_BYTES + 0x400000) >> 12, &win_alloc)) {
+        fail("no room below 4 GB for the framebuffer window");
+        return 1;
+    }
+    if (win_alloc >= 0x100000 && win_alloc < ext_end) ext_end = win_alloc;
     if (ext_end < 0x100000 + 0x100000) {
         fail("less than a megabyte of extended memory - Ember needs more");
         return 1;
     }
+    say_hex("framebuffer window at", (win_alloc + 0x3FFFFF) & ~0x3FFFFFULL);
     say_hex("disk image at", rd_base);
     say_dec("extended memory for Ember", (ext_end - 0x100000) >> 20, " MB");
 
@@ -496,6 +514,7 @@ EFI_STATUS EFIAPI EfiMain(EFI_HANDLE image, EFI_SYSTEM_TABLE *st)
     put32(sh, SH_RD_SIZE, (u32)img_size);
     put32(sh, SH_LOW_TOP, (u32)low_top);
     put32(sh, SH_EXT_END, (u32)ext_end);
+    put32(sh, SH_FBWIN, (u32)((win_alloc + 0x3FFFFF) & ~0x3FFFFFULL));
 
     /* ---- leave.  The map key must be the current one; allocations above
        changed it, and printing may have too, so read it again right before

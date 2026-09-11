@@ -100,6 +100,11 @@ int gpu_open(uint32_t *a, uint32_t *b, uint32_t *c, int w, int h, int pitch)
     cls = pci_read(8);
     cmd = pci_read(4);
     if ((id & 0xFFFF) != 0x8086 || (cls >> 24) != 0x03) { decline("no Intel display device at PCI 0:2.0"); return -1; }
+    /* Every register below was read off a Broadwell, and the checks further
+       down would not catch a later generation that keeps the names and moves
+       the furniture.  Anything else gets its frames copied instead, which is
+       slower and certain - and on a machine that is not ours, certain wins. */
+    if ((id >> 16) != 0x1616 && (id >> 16) != 0x161E) { decline("not the Broadwell GT2 this was written for"); return -1; }
     if (!(cmd & 2)) { decline("its memory decoding is off"); return -1; }
     b0lo = pci_read(0x10);
     b0hi = pci_read(0x14);
