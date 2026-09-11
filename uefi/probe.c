@@ -174,7 +174,7 @@ typedef struct FILE_PROTOCOL {
     EFI_STATUS (EFIAPI *Open)(struct FILE_PROTOCOL *, struct FILE_PROTOCOL **,
                               u16 *, u64, u64);
     EFI_STATUS (EFIAPI *Close)(struct FILE_PROTOCOL *);
-    void *Delete;
+    EFI_STATUS (EFIAPI *Delete)(struct FILE_PROTOCOL *);
     void *Read;
     EFI_STATUS (EFIAPI *Write)(struct FILE_PROTOCOL *, uptr *, void *);
     void *GetPosition, *SetPosition, *GetInfo, *SetInfo;
@@ -329,13 +329,29 @@ static void secure_boot(void)
    and it is the only answer to the keyboard question that can be trusted.
    Reading ports to find out would disturb the firmware's own driver; this
    does not touch anything. */
+static u32 ids_kbd, ids_mouse, ids_i2c;
+
+/* walk one table for the compressed EISA identifiers above */
+static void scan_ids(u8 *t)
+{
+    u32 len = *(u32 *)(t + 4), i;
+    if (len < 36 || len > 0x400000) return;    /* not a table at all */
+    for (i = 36; i + 4 <= len; i++) {
+        if (t[i] != 0x41 || t[i + 1] != 0xD0) continue;
+        if (t[i + 3] == 0x03) ids_kbd++;                /* PNP03xx */
+        else if (t[i + 3] == 0x0F && t[i + 2] == 0x13) ids_mouse++;
+        else if (t[i + 3] == 0x0C && t[i + 2] == 0x50) ids_i2c++;
+    }
+}
+
 static void acpi(void)
 {
     u8 *rsdp = NULLPTR;
     uptr i;
-    u64 xsdt_addr = 0;
+    u64 xsdt_addr = 0, dsdt = 0;
     u8 *xsdt;
     u32 len, entries, e;
+    int fadt_seen = 0;
 
     line("");
     line("---- what the machine says it still has (ACPI) ----");
@@ -374,19 +390,56 @@ static void acpi(void)
                    devices" - which is a confident answer to a question this
                    table cannot answer.  Say so instead. */
                 say("legacy hardware flags",
-                    "this FADT predates them - see the ports below");
-                return;
+                    "this FADT predates them - see the namespace below");
+                dsdt = *(u32 *)(t + 40);       /* which any revision has */
+                fadt_seen = 1;
+                continue;
             }
             boot_arch = (u16)(t[109] | (t[110] << 8));
             say_hex("IAPC_BOOT_ARCH", boot_arch, 4);
             say_yn("  legacy devices present", (boot_arch & 1) != 0);
-            say_yn("  8042 KEYBOARD CONTROLLER", (boot_arch & 2) != 0);
+            say_yn("  8042 controller (FADT's claim)", (boot_arch & 2) != 0);
             say_yn("  VGA hardware present", (boot_arch & 4) == 0);
             say_yn("  CMOS real-time clock present", (boot_arch & 32) == 0);
-            return;
+            /* the DSDT: the 32-bit pointer at 40, or the 64-bit one at 140
+               in a table long enough to have it */
+            dsdt = *(u32 *)(t + 40);
+            if (flen >= 148) {
+                u64 x = 0;
+                for (i = 0; i < 8; i++) x |= ((u64)t[140 + i]) << (i * 8);
+                if (x) dsdt = x;
+            }
+            fadt_seen = 1;
         }
     }
-    say("FADT", "not in the XSDT");
+    if (!fadt_seen) { say("FADT", "not in the XSDT"); return; }
+
+    /* The FADT's flag is a claim, and on modern laptops it is often wrong in
+       the pessimistic direction: cleared even though the keyboard is on a
+       perfectly good 8042 behind the embedded controller.  What an operating
+       system actually trusts is the namespace - a device whose _HID is
+       PNP0303 (or another PNP03xx) is a keyboard controller, whatever the
+       flag says, and Linux goes on to use it.  Running an AML interpreter to
+       find one would be a project; finding the four bytes an EISA identifier
+       compresses to is a loop.  PNP0303 is 41 D0 03 03; PNP0F13, the mouse
+       beside it, is 41 D0 13 0F; PNP0C50 is a keyboard over I2C, which is the
+       other answer and the one a stub could not use. */
+    line("  the namespace, for what an OS would actually find:");
+    if (dsdt) scan_ids((u8 *)(uptr)dsdt);
+    for (e = 0; e < entries; e++) {
+        u64 p = 0;
+        u8 *t;
+        for (i = 0; i < 8; i++) p |= ((u64)xsdt[36 + e * 8 + i]) << (i * 8);
+        t = (u8 *)(uptr)p;
+        if (t && t[0] == 'S' && t[1] == 'S' && t[2] == 'D' && t[3] == 'T')
+            scan_ids(t);
+    }
+    say_dec("  PNP03xx keyboard controllers", ids_kbd);
+    say_dec("  PNP0F13 PS/2 mice", ids_mouse);
+    say_dec("  PNP0C50 I2C HID devices", ids_i2c);
+    say("  8042 KEYBOARD, all things considered",
+        ids_kbd ? "yes, the namespace has one"
+        : "NO - nothing in the namespace claims one");
 }
 
 static void screen(void)
@@ -626,6 +679,13 @@ static void save(EFI_HANDLE image)
         line("(the report could not be saved: the volume would not open)");
         return;
     }
+    /* Opening an existing file for writing does not shorten it, so a report
+       shorter than the last one left the last one's tail showing through -
+       the Yoga's processor turned up at the bottom of the ThinkPad's.  A
+       previous report is deleted first; Delete closes the handle itself. */
+    if (!root->Open(root, &f, (u16 *)L"EMBRPROB.TXT", 2 | 1, 0) && f)
+        f->Delete(f);
+    f = NULLPTR;
     /* create, read and write */
     if (root->Open(root, &f, (u16 *)L"EMBRPROB.TXT",
                    0x8000000000000000ULL | 2 | 1, 0) || !f) {
