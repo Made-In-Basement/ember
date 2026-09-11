@@ -23,6 +23,12 @@ uint32_t *back;
 
 static uint8_t *fb;                     /* the card's memory */
 static int fb_pitch, fb_bpp;
+/* A screen far bigger than asked for is drawn at half size and every pixel
+   doubled on the way out, or the text is unreadable: fonts and icons are
+   pixels, and a 3072-wide panel that offers no smaller mode has twice as
+   many of them as the 1920 these were drawn for. */
+static int fb_scale = 1;
+static uint32_t *dbl_line;              /* one doubled row, for the copy */
 static int direct;                      /* the display scans our buffers itself: nothing to copy */
 static uint32_t *bufs[3];               /* three: one shown, one asked for, one being drawn (`back`) */
 static int cur, requested;              /* the one being drawn; the one last handed to the display */
@@ -90,11 +96,20 @@ int draw_open(int want_w, int want_h)
     if (sys_set_vbe_mode(mode, 1) != 0)
         return -1;
     sys_log("screen: mode set");
-    scr_w = m.width;
-    scr_h = m.height;
+    fb_scale = 1;
+    if ((m.width > want_w || m.height > want_h) && m.bpp == 32
+        && m.width / 2 >= 640 && m.height / 2 >= 480)
+        fb_scale = 2;
+    scr_w = m.width / fb_scale;
+    scr_h = m.height / fb_scale;
     fb_pitch = m.pitch;
     fb_bpp = m.bpp;
     fb = (uint8_t *)m.framebuffer;
+    if (fb_scale == 2) {
+        sys_logf("screen: drawn at %dx%d, doubled", scr_w, scr_h);
+        dbl_line = malloc((size_t)m.width * 4 + 64);
+        if (!dbl_line) { sys_set_video_mode(3); return -1; }
+    }
     back = malloc((size_t)scr_w * scr_h * 4 + 4096);
     if (!back) {
         sys_set_video_mode(3);
@@ -105,7 +120,7 @@ int draw_open(int want_w, int want_h)
     /* Best: the display engine scans our buffers out directly, one shown
        while the other is drawn.  Otherwise frames are copied into the
        card's memory, made write-combining. */
-    if (fb_bpp == 32) {
+    if (fb_bpp == 32 && fb_scale == 1) {
         uint32_t *second = malloc((size_t)scr_w * scr_h * 4 + 4096);
         uint32_t *third = malloc((size_t)scr_w * scr_h * 4 + 4096);
         if (second && third) {
@@ -242,6 +257,23 @@ void draw_present(void)
         const uint32_t *src = back + (size_t)y * scr_w + dmg_x0;
         uint8_t *dst = fb + (size_t)y * fb_pitch;
         int n = dmg_x1 - dmg_x0;
+        if (fb_scale == 2) {
+            /* the row doubled sideways once, then written twice */
+            uint32_t *d = (uint32_t *)(fb + (size_t)(y * 2) * fb_pitch) + dmg_x0 * 2;
+            uint32_t *l = dbl_line;
+            int count = n * 2, k;
+            const uint32_t *s2 = l;
+            for (x = 0; x < n; x++) { uint32_t c = src[x]; *l++ = c; *l++ = c; }
+            for (k = 0; k < 2; k++) {
+                uint32_t *dd = (uint32_t *)((uint8_t *)d + (size_t)k * fb_pitch);
+                const uint32_t *ss = s2;
+                int cc = count;
+                __asm__ volatile("rep movsl"
+                                 : "+D"(dd), "+S"(ss), "+c"(cc)
+                                 : : "memory");
+            }
+            continue;
+        }
         if (fb_bpp == 32) {
             /* A block move, not a loop: the card's memory is not cached,
                and every write to it is slow enough that the difference

@@ -411,6 +411,34 @@ EFI_STATUS EFIAPI EfiMain(EFI_HANDLE image, EFI_SYSTEM_TABLE *st)
         fail("no graphics output protocol - there is nothing to draw on");
         return 1;
     }
+    /* The largest mode on offer.  A laptop's firmware is already in its
+       panel's native mode and this changes nothing; a virtual machine's
+       offers a list and starts small, and the desktop's half-size drawing
+       can only be tested on a screen big enough to need it. */
+    {
+        u32 i, best = gop->Mode->Mode, best_area = 0;
+        for (i = 0; i < gop->Mode->MaxMode; i++) {
+            GOP_MODE_INFO *inf = NULLPTR;
+            uptr sz = 0;
+            EFI_STATUS (EFIAPI *query)(GOP *, u32, uptr *, GOP_MODE_INFO **) =
+                (EFI_STATUS (EFIAPI *)(GOP *, u32, uptr *, GOP_MODE_INFO **))
+                gop->QueryMode;
+            if (query(gop, i, &sz, &inf) || !inf) continue;
+            if (inf->PixelFormat > 1) continue;         /* a plain 32-bit framebuffer */
+            if (inf->HorizontalResolution * inf->VerticalResolution > best_area) {
+                best_area = inf->HorizontalResolution * inf->VerticalResolution;
+                best = i;
+            }
+        }
+        if (best != gop->Mode->Mode) {
+            EFI_STATUS (EFIAPI *set)(GOP *, u32) =
+                (EFI_STATUS (EFIAPI *)(GOP *, u32))gop->SetMode;
+            set(gop, best);
+            st->ConOut->ClearScreen(st->ConOut);
+            line("Ember 2.0");
+            line("");
+        }
+    }
     put("screen ");
     put(dec(gop->Mode->Info->HorizontalResolution)); put(" x ");
     put(dec(gop->Mode->Info->VerticalResolution)); put(", framebuffer at ");
