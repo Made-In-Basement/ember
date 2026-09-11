@@ -553,9 +553,8 @@ heartbeat:
         movzx   eax, byte [kb_last]
         mov     cx, 2
         call    hb_hex
-        mov     byte [dr_col], 60
-        mov     byte [dr_row], 0
-        mov     word [dr_n], 20
+        mov     ax, 60                  ; column 60, row 0
+        mov     dx, 20
         call    pm_draw
         popa
         pop     fs
@@ -1718,20 +1717,21 @@ cursor_move:
 
 ; draw_one: AL = col, AH = row: one cell onto the screen
 draw_one:
-        push    ax
-        mov     [dr_col], al
-        mov     [dr_row], ah
-        mov     word [dr_n], 1
+        push    dx
+        mov     dx, 1
         call    pm_draw
-        pop     ax
+        pop     dx
         ret
 
 ; draw_all: every cell
 draw_all:
-        mov     byte [dr_col], 0
-        mov     byte [dr_row], 0
-        mov     word [dr_n], COLS * ROWS
+        push    ax
+        push    dx
+        xor     ax, ax
+        mov     dx, COLS * ROWS
         call    pm_draw
+        pop     dx
+        pop     ax
         ret
 
 ; screen_clear: everything to spaces in light grey, cursor home
@@ -1753,8 +1753,7 @@ screen_clear:
         ; The text area is smaller than the panel, and a program that has
         ; just given the screen back leaves its picture in the margin
         ; around it.  A mode set is the moment to black the whole thing.
-        mov     word [pm_routine], clear32
-        call    pm_call
+        call    pm_clear
         call    draw_all
         pop     di
         pop     cx
@@ -1980,9 +1979,8 @@ write_repeated:
         xor     dx, dx
         mov     es, dx
         mov     dx, [es:BDA_CURSOR]
-        mov     [dr_col], dl
-        mov     [dr_row], dh
-        mov     [dr_n], cx
+        push    dx                      ; where, and how many, for the draw
+        push    cx
         push    ax
         mov     ax, dx
         call    cell_offset
@@ -1999,7 +1997,9 @@ write_repeated:
         add     bx, 2
         dec     cx
         jmp     .each
-.drawn: call    pm_draw
+.drawn: pop     dx                      ; the count
+        pop     ax                      ; the cursor: AL column, AH row
+        call    pm_draw
         pop     es
         popa
         ret
@@ -2078,15 +2078,40 @@ write_string:
 ;  here, so the labels and variables mean what they mean everywhere else, and
 ;  ES flat, for the framebuffer and the disk.  Then everything back.
 ; =============================================================================
+; pm_copy: cp_src, cp_dst, cp_len.  pm_draw: AL = column, AH = row, DX = how
+;   many cells.  pm_clear: everything black.
+;
+;   The parameters go into their variables only once interrupts are off.
+;   The heartbeat draws from the timer, through this same routine, and once
+;   overwrote "redraw all two thousand cells" with "redraw twenty" between a
+;   scroll storing it and the hop reading it - the scroll never reached the
+;   screen and a stale line stayed on it, twice.
 pm_copy:
+        pushf
+        cli
         mov     word [pm_routine], copy32
-        jmp     pm_call
+        call    pm_call
+        popf
+        ret
+pm_clear:
+        pushf
+        cli
+        mov     word [pm_routine], clear32
+        call    pm_call
+        popf
+        ret
 pm_draw:
         cmp     byte [gfx_mode], 0      ; a program has the screen: the cells
         jne     .not_now                ;  are kept, but not drawn
+        pushf
+        cli
+        mov     [dr_col], al
+        mov     [dr_row], ah
+        mov     [dr_n], dx
         call    pm_draw_refresh         ; where the cursor is, for draw32
         mov     word [pm_routine], draw32
-        jmp     pm_call
+        call    pm_call
+        popf
 .not_now:
         ret
 
@@ -2451,8 +2476,7 @@ screen_init:
         mov     ax, 0x0720
         mov     cx, COLS * ROWS
         rep     stosw
-        mov     word [pm_routine], clear32
-        call    pm_call
+        call    pm_clear
         pop     es
         popa
         ret
