@@ -505,6 +505,51 @@ static void memory(void)
     say_dec("free memory, MB", free_total >> 20);
     say_dec("largest free block, MB", biggest >> 20);
     say_dec("free below 1 MB, KB", low_free >> 10);
+
+    /* How much is free below a megabyte is the wrong question for a real-mode
+       kernel; where the firmware's pieces sit is the right one.  Ember's
+       kernel is at 8000h and its programs want everything from there to the
+       top of conventional memory in one piece, so a firmware region in the
+       middle matters and one at the edge does not.  Memory the firmware only
+       uses while it is running - its loader and boot services - is Ember's
+       once the stub has told it to go; the rest stays the firmware's for as
+       long as the machine is on. */
+    {
+        static const char *kind[] = {
+            "reserved", "loader code", "loader data",
+            "boot services code", "boot services data",
+            "RUNTIME CODE", "RUNTIME DATA", "free",
+            "unusable", "ACPI tables", "ACPI NVS",
+            "memory-mapped I/O", "I/O port space", "PAL code", "persistent" };
+        u64 low_after = 0;
+        line("  below 1 MB, region by region:");
+        for (off = 0; off + dsize <= size; off += dsize) {
+            u32 type = *(u32 *)(map + off);
+            u64 start = *(u64 *)(map + off + 8);
+            u64 end = start + (*(u64 *)(map + off + 24) << 12);
+            char row[96];
+            const char *s;
+            int n = 0, reclaim;
+            if (start >= 0x100000) continue;
+            if (end > 0x100000) end = 0x100000;
+            reclaim = type == 7 || (type >= 1 && type <= 4);
+            if (reclaim) low_after += end - start;
+            row[n++] = ' '; row[n++] = ' '; row[n++] = ' '; row[n++] = ' ';
+            s = hex(start, 5); while (*s) row[n++] = *s++;
+            row[n++] = '-';
+            s = hex(end - 1, 5); while (*s) row[n++] = *s++;
+            row[n++] = ' ';
+            s = type < 15 ? kind[type] : "unknown";
+            while (*s) row[n++] = *s++;
+            if (!reclaim) {
+                s = "  (never Ember's)";
+                while (*s) row[n++] = *s++;
+            }
+            row[n] = 0;
+            line(row);
+        }
+        say_dec("free below 1 MB once UEFI is gone, KB", low_after >> 10);
+    }
     BS->FreePool(map);
 }
 
