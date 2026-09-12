@@ -207,6 +207,77 @@ gui_reset_state:
         mov     byte [clock_minute], 0xFF
         ret
 
+%ifdef NANODOS
+; -----------------------------------------------------------------------------
+; retro_error: the next of the errors, in a red box in the middle of the
+;   screen, for the camera.  Nothing is wrong; the key that dismisses it
+;   redraws the desktop underneath.
+; -----------------------------------------------------------------------------
+RETRO_W         equ 360
+RETRO_H         equ 104
+retro_error:
+        pusha
+        mov     ax, [scr_w]
+        shr     ax, 1
+        sub     ax, RETRO_W / 2
+        mov     bx, [scr_h]
+        shr     bx, 1
+        sub     bx, RETRO_H / 2
+        mov     cx, RETRO_W
+        mov     dx, RETRO_H
+        ; the box, a white frame, a darker title strip
+        mov     byte [pen], C_RED
+        call    gfx_fill_rect
+        mov     byte [pen], C_WHITE
+        call    gfx_rect
+        push    dx
+        mov     dx, 18
+        mov     byte [pen], C_MAROON
+        call    gfx_fill_rect
+        pop     dx
+        ; the title, the message, the way out
+        mov     byte [text_fg], C_WHITE
+        mov     byte [text_bg], C_MAROON
+        mov     si, str_retro_title
+        push    bx
+        add     bx, 5
+        call    gfx_text_center
+        pop     bx
+        mov     byte [text_bg], C_RED
+        movzx   si, byte [retro_idx]
+        shl     si, 1
+        mov     si, [retro_msgs + si]
+        push    bx
+        add     bx, 42
+        call    gfx_text_center
+        pop     bx
+        mov     si, str_retro_ok
+        add     bx, RETRO_H - 22
+        call    gfx_text_center
+        ; the next one, round the list
+        inc     byte [retro_idx]
+        cmp     byte [retro_idx], RETRO_COUNT
+        jb      .kept
+        mov     byte [retro_idx], 0
+.kept:  mov     byte [retro_open], 1
+        popa
+        ret
+
+str_retro_title: db "NanoDOS", 0
+str_retro_ok:   db "OK", 0
+retro_msgs:
+        dw r_m0, r_m1, r_m2, r_m3, r_m4, r_m5, r_m6, r_m7
+RETRO_COUNT     equ 8
+r_m0:   db "No mouse detected.", 0
+r_m1:   db "Low memory.", 0
+r_m2:   db "No keyboard.", 0
+r_m3:   db "Protection fault.", 0
+r_m4:   db "Disk read error.", 0
+r_m5:   db "No sound card.", 0
+r_m6:   db "Divide overflow.", 0
+r_m7:   db "Out of memory.", 0
+%endif
+
 ; =============================================================================
 ; main loop
 ; =============================================================================
@@ -1363,6 +1434,31 @@ drag_update:
 ; -----------------------------------------------------------------------------
 gui_key:
         pusha
+%ifdef NANODOS
+        ; The dramatisation: with the menu closed, any key but Ctrl+Esc
+        ; brings up an error, and the next key takes it down again.  The
+        ; menu itself still works, because it is the thing to be filmed.
+        cmp     byte [menu_open], 0
+        jne     .not_retro
+        cmp     al, 27
+        jne     .retro_key
+        push    ax
+        mov     ah, 0x02
+        int     0x16
+        test    al, 0x04                        ; Ctrl held: the menu
+        pop     ax
+        jnz     .not_retro
+.retro_key:
+        cmp     byte [retro_open], 0
+        je      .retro_show
+        mov     byte [retro_open], 0
+        call    gui_redraw
+        jmp     .done
+.retro_show:
+        call    retro_error
+        jmp     .done
+.not_retro:
+%endif
         cmp     al, 27
         jne     .not_esc
         ; Ctrl+Esc toggles the Start menu
@@ -1497,6 +1593,10 @@ gui_vmode:      db 0
 gui_nomouse:    db 0
 gui_quit:       db 0
 menu_open:      db 0
+%ifdef NANODOS
+retro_open:     db 0                    ; an error is on the screen
+retro_idx:      db 0                    ; which one comes next
+%endif
 cursor_visible: db 0
 prev_buttons:   db 0
 cur_buttons:    db 0
@@ -1523,11 +1623,11 @@ app_draw:       dw fm_draw, np_draw, calc_draw, about_draw
 app_click:      dw fm_click, np_click, calc_click, about_click
 app_key:        dw fm_key, np_key, calc_key, about_key
 str_start:      db "Start", 0
-str_band:       db "Ember", 0
+str_band:       db OS_NAME, 0
 str_my_computer: db "My Computer", 0
 str_notepad:    db "Notepad", 0
 str_calculator: db "Calculator", 0
-str_about:      db "About Ember", 0
+str_about:      db "About ", OS_NAME, 0
 str_about_short: db "About", 0
 str_dos_prompt: db "DOS Prompt", 0
 str_exit_dos:   db "Exit to DOS", 0

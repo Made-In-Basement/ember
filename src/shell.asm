@@ -1877,16 +1877,16 @@ msg_time:           db "Current time is ", 0
 msg_date:           db "Current date is ", 0
 msg_mem_conv:       db " KB conventional memory", 13, 10, 0
 msg_mem_ext:        db " KB extended memory (above 1 MB)", 13, 10, 0
-msg_mem_kernel:     db " KB used by the Ember kernel at 0800:0000", 13, 10, 0
+msg_mem_kernel:     db " KB used by the ", OS_NAME, " kernel at 0800:0000", 13, 10, 0
 msg_color_usage:    db "Usage: COLOR <bf>   (two hex digits: background, foreground, e.g. COLOR 1F)", 13, 10, 0
 msg_pause:          db "Press any key to continue . . . ", 0
 msg_rebooting:      db "Rebooting...", 13, 10, 0
-msg_shutdown:       db 13, 10, 10, "          Ember is shutting down...", 13, 10, 0
+msg_shutdown:       db 13, 10, 10, "          ", OS_NAME, " is shutting down...", 13, 10, 0
 msg_safe_off:       db 13, 10, 10, "          It is now safe to turn off your computer.", 13, 10, 0
-msg_version:        db 13, 10, "Ember Version ", VERSION, " (", BUILD_STAMP, ")", 13, 10, 0
+msg_version:        db 13, 10, OS_NAME, " Version ", OS_VER, " (", BUILD_STAMP, ")", 13, 10, 0
 msg_help:
         db 13, 10
-        db "Ember commands:", 13, 10
+        db OS_NAME, " commands:", 13, 10
         db "  DIR [path]      List files          CD [path]       Change directory", 13, 10
         db "  TYPE <file>     Show a text file    ECHO <text>     Print text", 13, 10
         db "  CLS             Clear the screen    COLOR <bf>      Set colours (e.g. 1F)", 13, 10

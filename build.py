@@ -28,6 +28,16 @@ SRC = ROOT / "src"
 PROGRAMS = ROOT / "programs"
 MODULES = ROOT / "modules"
 FILES = ROOT / "root"
+# root files replaced in a particular image, by name (see --retro)
+OVERRIDES = {}
+
+# The NanoDOS image: the video's "before".  The same kernel under the old
+# name, a boot that scrolls three screens of invented trouble, and the old
+# desktop putting up an error for every key.  A dramatisation, and labelled
+# as one in the video; nothing in it is a record of anything.
+RETRO_AUTOEXEC = (b"@ECHO OFF\r\n"
+                  b"RETRO\r\n"
+                  b"ECHO Type WIN to start the desktop.\r\n")
 BUILD = ROOT / "build"
 SECTOR = 512
 
@@ -72,8 +82,10 @@ def find_qemu():
     return None
 
 
-def assemble(nasm_exe, src, out, include_dir=None):
+def assemble(nasm_exe, src, out, include_dir=None, defines=()):
     cmd = [nasm_exe, "-f", "bin", "-o", str(out), str(src)]
+    for d in defines:
+        cmd += ["-D" + d]
     if include_dir:
         for d in (include_dir if isinstance(include_dir, (list, tuple))
                   else [include_dir]):
@@ -347,7 +359,9 @@ class FatImage:
                 put(self.entry(n11, 0x10, cl, 0, ts))
                 print(f"  + {item.relative_to(FILES) if FILES in item.parents else item.name}/")
             else:
-                data = item.read_bytes()
+                data = OVERRIDES.get(item.name) if item.parent == FILES else None
+                if data is None:
+                    data = item.read_bytes()
                 cl = self.store(data)
                 put(self.entry(n11, 0x20, cl, len(data), ts))
                 self.file_count += 1
@@ -434,15 +448,24 @@ def main():
     ap.add_argument("--out", default=str(BUILD / "ember.img"))
     ap.add_argument("--run", action="store_true", help="boot the image in QEMU afterwards")
     ap.add_argument("--hd", action="store_true", help="(kept for compatibility; disk is the default)")
+    ap.add_argument("--retro", action="store_true",
+                    help="the NanoDOS image for the video: old name, a boot full of "
+                         "invented errors, the old desktop complaining at every key")
     args = ap.parse_args()
+    defines = []
+    if args.retro:
+        defines.append("NANODOS")
+        OVERRIDES["AUTOEXEC.BAT"] = RETRO_AUTOEXEC
+        if args.out == str(BUILD / "ember.img"):
+            args.out = str(BUILD / "nanodos.img")
 
     BUILD.mkdir(exist_ok=True)
     nasm_exe = find_nasm()
     write_build_stamp()
 
     print("Assembling:")
-    boot = assemble(nasm_exe, SRC / "boot.asm", BUILD / "boot.bin")
-    kernel = assemble(nasm_exe, SRC / "kernel.asm", BUILD / "kernel.bin", SRC)
+    boot = assemble(nasm_exe, SRC / "boot.asm", BUILD / "boot.bin", defines=defines)
+    kernel = assemble(nasm_exe, SRC / "kernel.asm", BUILD / "kernel.bin", SRC, defines)
     mbr = assemble(nasm_exe, SRC / "mbr.asm", BUILD / "mbr.bin")
     if len(boot) != 512 or len(mbr) != 512:
         sys.exit("boot sector and MBR must be exactly 512 bytes")
@@ -451,6 +474,8 @@ def main():
     programs = []
     for src in sorted(PROGRAMS.glob("*.asm")):
         # foo.asm -> FOO.COM;  foo_exe.asm -> FOO.EXE (hand-built MZ header)
+        if src.stem == "retro" and not args.retro:
+            continue                            # the dramatisation stays in its own image
         stem = src.stem.upper()
         out = BUILD / (stem[:-4] + ".EXE" if stem.endswith("_EXE") else stem + ".COM")
         programs.append((out.name, assemble(nasm_exe, src, out)))

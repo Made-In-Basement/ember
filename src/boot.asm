@@ -210,7 +210,11 @@ print:
 ; =============================================================================
 ; Data
 ; =============================================================================
+%ifdef NANODOS
+msg_banner:     db 13, 10, "NanoDOS boot", 0
+%else
 msg_banner:     db 13, 10, "Ember boot", 0
+%endif
 msg_dot:        db ".", 0
 msg_disk_error: db 13, 10, "Disk read error!", 0
 msg_reboot:     db 13, 10, "Press any key to reboot.", 0

@@ -17,6 +17,19 @@
 
 %define VERSION "1.2"
 %include "../build/version.inc"
+; The NanoDOS image (build.py --retro) is a dramatisation of the first
+; weeks, for the video: the same kernel under the old name, with the old
+; desktop throwing errors.  Nothing about it is real and nothing else
+; changes; OS_NAME is what every banner says.
+%ifdef NANODOS
+%define OS_NAME "NanoDOS"
+%define OS_VER "0.1"
+%define OS_DESKTOP "WIN"
+%else
+%define OS_NAME "Ember"
+%define OS_VER VERSION
+%define OS_DESKTOP "EMBER"
+%endif
 KERNEL_SEG      equ 0x0800
 BATCH_MAX       equ 2047
 AFTER_MAX       equ 512                         ; lines a program leaves to run after it
@@ -124,17 +137,17 @@ drive_letter:   db 'A'
 drive_number:   db 0
 screen_attr:    db 0x07
 msg_banner:
-        db "Ember Version ", VERSION, " (", BUILD_STAMP, ")", 13, 10
+        db OS_NAME, " Version ", OS_VER, " (", BUILD_STAMP, ")", 13, 10
         db "A DOS-like operating system written from scratch in x86 assembly.", 13, 10
-        db "Type HELP for a list of commands, or EMBER for the desktop.", 13, 10
+        db "Type HELP for a list of commands, or ", OS_DESKTOP, " for the desktop.", 13, 10
         db 13, 10, 0
 msg_no_fs_warn:
         db "Warning: no valid FAT filesystem found on the boot disk.", 13, 10
         db "File commands (DIR, TYPE, CD, programs) will not work.", 13, 10, 13, 10, 0
 msg_starting:
-        db "Starting Ember (hold Shift to skip AUTOEXEC.BAT)...", 0
+        db "Starting ", OS_NAME, " (hold Shift to skip AUTOEXEC.BAT)...", 0
 msg_log_header:
-        db "Ember ", VERSION, " boot log (written to EMBER.LOG after sound commands and the GUI)", 0
+        db OS_NAME, " ", OS_VER, " boot log (written to EMBER.LOG after sound commands and the GUI)", 0
 msg_log_drive:
         db "BIOS boot drive         ", 0
 msg_autoexec_skipped:

@@ -1119,9 +1119,9 @@ about_draw:
         ret
 
 about_lines:
-        db "Ember Windows 1.0", 0
+        db OS_NAME, " Windows 1.0", 0
         db "A graphical shell for", 0
-        db "Ember, written in", 0
+        db OS_NAME, ", written in", 0
         db "x86 assembly language.", 0
         db "", 0
         db "Esc closes  Tab switches", 0
