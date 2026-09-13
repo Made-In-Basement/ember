@@ -38,6 +38,8 @@ static char dir_path[80];
 static int track_count, playing = -1, paused, sel, top;
 static int have_stream;
 static int win_id = -1;
+static int chime_draining;              /* the chime's file is done; its tail is not */
+static unsigned chime_drain_ms;
 
 /* analyser state */
 static int bars[FFT_BARS], caps[FFT_BARS];
@@ -106,6 +108,7 @@ static void play_track(int i)
         have_stream = 1;
     }
     full_path(i, path);
+    chime_draining = 0;
     audio_silence();
     if (audio_open(path) != 0) { playing = -1; return; }
     playing = i;
@@ -401,10 +404,25 @@ int music_tick(void)
 {
     int changed = 0;
     if (playing == -2) {                        /* the start-up chime */
+        if (chime_draining) {
+            /* silence behind the tail until it has all been heard - and
+               not for ever, if the hardware's position ever stops moving */
+            if (!audio_drain() || now_ms() - chime_drain_ms > 2000) {
+                chime_draining = 0;
+                playing = -1;
+                if (win_id < 0 && have_stream) {
+                    audio_silence();
+                    audio_stop();
+                    have_stream = 0;
+                }
+            }
+            return 0;
+        }
         if (!audio_pump()) {
             audio_close();
-            playing = -1;
-            if (win_id < 0 && have_stream) { audio_stop(); have_stream = 0; }
+            audio_drain_begin();
+            chime_draining = 1;
+            chime_drain_ms = now_ms();
         }
         return 0;
     }
@@ -471,6 +489,7 @@ void music_chime(void)
     if (audio_start() != 0)
         return;
     have_stream = 1;
+    chime_draining = 0;
     if (audio_open("\\EMBER.WAV") != 0)
         return;
     playing = -2;                               /* playing, but not a track */

@@ -221,6 +221,52 @@ void audio_silence(void)
     cache_flush((const void *)ring, pcm.ring_size);
 }
 
+/* The end of a sound.  The pump keeps nearly a whole ring ahead of the
+   hardware, so when the file runs out a third of a second of it has not
+   been heard yet - and stopping the stream there both cut that off and
+   left the last buffer in place, which is what the hardware (and QEMU's
+   audio output) went on playing round and round until the next sound
+   replaced it: the tail of the start-up chime, quietly, for ever.
+
+   So the ring is topped up with silence instead, until the hardware has
+   played everything that was real and gone a whole lap past it.  By then
+   every sample in the ring is zero, and stopping it is silent. */
+static unsigned drain_moved, drain_last_hw;
+
+void audio_drain_begin(void)
+{
+    if (!audio_ready || !ring_frames) return;
+    drain_last_hw = (*lpib / 4) % ring_frames;
+    drain_moved = 0;
+}
+
+int audio_drain(void)
+{
+    unsigned hw, ahead, room, w;
+    if (!audio_ready || !ring_frames) return 0;
+    hw = (*lpib / 4) % ring_frames;
+    drain_moved += (hw - drain_last_hw + ring_frames) % ring_frames;
+    drain_last_hw = hw;
+    if (drain_moved >= ring_frames + lead_frames) return 0;
+    ahead = (wpos - hw + ring_frames) % ring_frames;
+    if (ahead > ring_frames - 64) ahead = 0;    /* the hardware caught up */
+    if (ahead >= lead_frames) return 1;
+    room = lead_frames - ahead;
+    w = wpos;
+    while (room--) {
+        ring[w * 2] = 0;
+        ring[w * 2 + 1] = 0;
+        if (++w >= ring_frames) w = 0;
+    }
+    if (w >= wpos) cache_flush((const void *)(ring + wpos * 2), (w - wpos) * 4);
+    else {
+        cache_flush((const void *)(ring + wpos * 2), (ring_frames - wpos) * 4);
+        cache_flush((const void *)ring, w * 4);
+    }
+    wpos = w;
+    return 1;
+}
+
 /* Keep the ring fed.  Returns 0 when the track has finished. */
 /* how far ahead of the chip we are, as a percentage of the ring */
 int audio_ring_fill(void)

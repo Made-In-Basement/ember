@@ -10,6 +10,8 @@ int  audio_open(const char *path);      /* 0 if the file can be played */
 void audio_close(void);
 int  audio_pump(void);                  /* 0 when the track has ended */
 void audio_silence(void);
+void audio_drain_begin(void);           /* a sound has ended: play its tail out */
+int  audio_drain(void);                 /* silence behind it; 0 once it is safe to stop */
 void audio_decay_peaks(void);
 void audio_seek_permille(int p);        /* 0..1000 through the file */
 
