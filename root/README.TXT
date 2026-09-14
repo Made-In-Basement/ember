@@ -46,12 +46,12 @@ graphical shell.  Hold Shift while booting to skip it and stay at the
 DOS prompt.  EXETEST runs a self-test of the DOS services.
 
   REVERSI       play Othello against the computer (built by
-                tools/build_reversi.py).  REVERSI 2P is two players,
-                REVERSI 1 to REVERSI 5 set the level (3 if not given),
-                REVERSI W lets you play white, REVERSI A watches the
-                computer play itself.
-  Keys: arrows, or A-H and 1-8, move the cursor; Enter or Space plays.
-        U = undo, N = new game, L = level, M = mode, S = hints,
-        Esc or Q = quit.
+                tools/build_reversi.py).  The new game screen picks the
+                opponent, your colour and the level (1-5).  REVERSI WHITE,
+                REVERSI BLACK 4, REVERSI 2P and REVERSI WATCH skip it.
+  Keys: click a square, type one like d3, or use the arrows and
+        Enter.  F1 help, F2 new game, F3 undo, F4 hints, + and -
+        change the level, Esc leaves.  Each finished game is saved
+        to REVERSI.TXT.
 
 Have fun exploring!
