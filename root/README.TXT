@@ -45,4 +45,12 @@ files (.BAT) work too: AUTOEXEC.BAT runs at every boot and starts the
 graphical shell.  Hold Shift while booting to skip it and stay at the
 DOS prompt.  EXETEST runs a self-test of the DOS services.
 
+  CHESS         play chess against Stockfish 11 (built by
+                tools/build_chess.py).  The new game screen picks the
+                opponent, your colour and the level (1-8).  CHESS WHITE,
+                CHESS BLACK 5, CHESS 2P and CHESS WATCH skip it.
+  Keys: drag or click pieces, or type a move like e2e4.  F1 help,
+        F2 new game, F3 undo, F4 flip the board, F5 hint, + and -
+        change the level, Esc leaves.  Games are saved to CHESS.PGN.
+
 Have fun exploring!
