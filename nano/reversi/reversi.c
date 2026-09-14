@@ -294,7 +294,7 @@ static void draw_board(void)
 
     /* keys */
     text(BX, BY + 8 * CELL + 5, "arrows or A-H,1-8   ENTER play  U undo", C_DIM);
-    text(BX, BY + 8 * CELL + 14, "N new  D level  M mode  H hints  ESC", C_DIM);
+    text(BX, BY + 8 * CELL + 14, "N new  L level  M mode  S hints  ESC", C_DIM);
 
     present();
 }
@@ -391,7 +391,7 @@ int main(int argc, char **argv)
 {
     int i;
 
-    for (i = 1; i < argc; i++) {                      /* REVERSI 2P | 1..5 */
+    for (i = 1; i < argc; i++) {                      /* 2P | 1..5 | W | A */
         if (argv[i][0] == '2' && (argv[i][1] == 'p' || argv[i][1] == 'P')) mode_ai = 0;
         else if (argv[i][0] >= '1' && argv[i][0] <= '5') difficulty = argv[i][0] - '0';
         else if (argv[i][0] == 'w' || argv[i][0] == 'W') human_color = WHITE;
@@ -435,15 +435,16 @@ int main(int argc, char **argv)
             else if (scan == 0x4D && cur_c < 7) cur_c++;
             continue;
         }
+        /* A-H pick the column, so the commands use letters from I on */
         if (al >= 'a' && al <= 'h') { cur_c = al - 'a'; continue; }
         if (al >= 'A' && al <= 'H') { cur_c = al - 'A'; continue; }
         if (al >= '1' && al <= '8') { cur_r = al - '1'; continue; }
         switch (al) {
         case 'n': case 'N': reset_game(); break;
         case 'u': case 'U': undo(); break;
-        case 'h': case 'H': show_hints = !show_hints; break;
+        case 's': case 'S': show_hints = !show_hints; break;
         case 'm': case 'M': mode_ai = !mode_ai; reset_game(); break;
-        case 'd': case 'D': difficulty = difficulty >= 5 ? 1 : difficulty + 1; break;
+        case 'l': case 'L': difficulty = difficulty >= 5 ? 1 : difficulty + 1; break;
         case 'q': case 'Q': goto done;
         default: break;
         }
