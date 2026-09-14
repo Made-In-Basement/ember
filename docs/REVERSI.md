@@ -205,7 +205,7 @@ The scripts are in
 | Disassembly of every function in `REVERSI.N32` | No SSE instruction |
 | Scripted games in QEMU, below | All pass |
 | `TYPE README.TXT` | The REVERSI entry is shown |
-| Keys and mouse sent through Hyper-V's WMI interface to a Generation 1 VM, game started from the desktop | A typed move is played and the computer replies; the pointer moves |
+| Keys and mouse sent through Hyper-V's WMI interface to a Generation 1 VM (the ember-contrib build of the same code) | A typed move is played and the computer replies; the pointer moves |
 
 Each scripted scenario boots `build/ember.img` fresh with
 `tools/qemu_test.py`, types keys and moves and clicks the mouse, then reads
