@@ -37,13 +37,20 @@ To test without a stick:
 
 boots it under EDK II in QEMU and prints what the console said.
 
-## What works, under EDK II in QEMU
+## What works
 
-Boot to the prompt, the keyboard, scrolling, `DIR` and `MEM`, reads and
-writes to the disk (a write to `EMBER.LOG` changes exactly the two sectors it
-should in the copy), the DPMI host with all twelve of `DPMITEST`'s checks,
-and `EMBER` declining cleanly with "no true-colour mode with a linear
-framebuffer".
+Under EDK II in QEMU: boot to the prompt, the keyboard, scrolling, `DIR` and
+`MEM`, reads and writes to the disk (a write to `EMBER.LOG` changes exactly
+the two sectors it should in the copy), and the DPMI host with all twelve of
+`DPMITEST`'s checks.
+
+On a Dell laptop that boots only UEFI, with a 3072×1920 panel: all of that,
+and the desktop.  The shim answers the VESA calls with one mode, the mode the
+panel is already in, with its framebuffer at the paging window's address, and
+answers `INT 15h E2B0h` with "EMB2" and the page directory; the kernel's
+32-bit runtime asks once and runs a program with paging on, so the desktop
+draws through the window.  A panel that large is drawn at half size and
+doubled on the way out, so the type is the size it was designed for.
 
 ## What it is, and is not, yet
 
@@ -58,12 +65,15 @@ monitor: a real-mode excursion for BIOS vectors, out of V86 and back, using
 its own `v86_leave` and `v86_enter`.  Until then `HELLO` prints and `SBREAL`
 reports "no monitor", both correctly.
 
-The screen is a text console.  Programs that draw into VGA memory at `A000h`
-— every DOS game — get nothing on machines without a VGA core, which is every
-Tiger Lake and Alder Lake laptop.  The shim reports no VESA and refuses
-graphics modes, so Ember's desktop declines cleanly rather than drawing into
-the dark.  Putting `A000h` behind the same paging window and blitting it is
-the next piece, and a bounded one.
+The prompt is a text console, and the desktop gets the panel's true-colour
+mode, but nothing else.  Programs that draw into VGA memory at `A000h` —
+every DOS game — get nothing on machines without a VGA core, which is every
+Tiger Lake and Alder Lake laptop.  Putting `A000h` behind the same paging
+window and blitting it is the next piece, and a bounded one.
+
+The desktop's graphics driver declines anything but the Broadwell chip it was
+written on, so frames are copied through the window.  Sound on these
+machines has not been confirmed yet.
 
 The keyboard has to be on an 8042.  `uefi/probe.c` finds out whether it is
 before any of this is tried; on the machines it was run on, it was.
