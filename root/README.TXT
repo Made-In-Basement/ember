@@ -45,4 +45,10 @@ files (.BAT) work too: AUTOEXEC.BAT runs at every boot and starts the
 graphical shell.  Hold Shift while booting to skip it and stay at the
 DOS prompt.  EXETEST runs a self-test of the DOS services.
 
+  REVERSI       play Othello against the computer (built by
+                tools/build_reversi.py).  REVERSI 2P is two players,
+                REVERSI 4 plays at level 4, REVERSI W lets you play white.
+  Keys: arrows or A-H and 1-8 move the cursor, Enter plays, U = undo,
+        N = new game, D = level, M = mode, H = hints, Esc = quit.
+
 Have fun exploring!
