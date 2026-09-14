@@ -3,8 +3,8 @@
 An operating system written from scratch: its own boot sector, FAT
 filesystem, DOS-compatible interrupts, sound driver, 32-bit runtime and
 graphical desktop. It boots from a USB stick on a real laptop, runs real DOS
-programs (Doom and Hexen included, with Sound Blaster sound on a machine that
-has no Sound Blaster), and gives you a desktop with a music player, a word
+programs (with Sound Blaster sound, on a machine that has no Sound Blaster),
+and gives you a desktop with a music player, a word
 processor, a paint program, touch input and 3D graphics. Nothing is borrowed
 from Linux, Windows or FreeDOS.
 
@@ -58,6 +58,12 @@ nothing else, drawn at half size and doubled when the panel is very large).
 The start menu is an ember crystal at the top of the screen: click it and it
 breaks in half, the pieces slide apart, and the menu falls out of the gap.
 Exit to DOS returns to the prompt.
+
+| Monitor | Clock |
+|---|---|
+| ![monitor](docs/screenshots/app-monitor.png) | ![clock](docs/screenshots/app-clock.png) |
+| **Calendar** | **3D** |
+| ![calendar](docs/screenshots/app-calendar.png) | ![solid](docs/screenshots/app-solid.png) |
 
 - **Files**: a file manager; opens pictures, music and text, runs programs.
 - **Write**: a word processor with styles (small, text, bold, title, lists,
@@ -176,6 +182,10 @@ are the probes that found out how the chip works (`docs/HARDWARE.md`).
   square wave through HD Audio. Nothing runs periodically and the timer is
   never read, so a game that uses it for its own timing is undisturbed.
   `SPEAKER OFF` hands the clock interrupt and the debug registers back.
+  `LOAD SB` has since replaced it for real-mode games: its monitor catches
+  the speaker's ports the same way it catches the card's, before the
+  instruction rather than after, and leaves the debug registers free.
+  `SPEAKER ON` is still there for when the monitor is not loaded.
 - **A Sound Blaster** (`docs/SOUND-BLASTER.md`). The card answers at 220h,
   IRQ 5, DMA 1, and `BLASTER=A220 I5 D1 T3` is put in a program's
   environment. Two hosts provide it:
@@ -203,6 +213,8 @@ taskbar with a Start button, overlapping windows in a Windows 95 look, its
 own PS/2 mouse driver and full keyboard control (`Ctrl+Esc` Start, `Esc`
 close, `Tab` switch, `F1` About), with a file browser, Notepad and a
 calculator.
+
+![the original shell](docs/screenshots/start-menu.png)
 
 ## Building
 
@@ -327,7 +339,7 @@ programs that launch other programs. For sound:
 
 | The game uses | Type first | Then |
 |---|---|---|
-| the PC speaker (Alley Cat) | `SPEAKER ON` | run it; `SPEAKER OFF` afterwards |
+| the PC speaker (Alley Cat, Prince of Persia) | `LOAD SB` | run it |
 | a Sound Blaster, real mode | `LOAD SB` | set it up for Sound Blaster, 220h, IRQ 5, DMA 1 |
 | a Sound Blaster, DOS/4GW (Doom, Hexen) | `LOAD DPMI` | the same, in the game's `SETUP` |
 
