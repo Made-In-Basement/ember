@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Show your program or game
+    url: https://github.com/Made-In-Basement/ember/discussions
+    about: Share something you made for Ember, without proposing it for the repository.
+  - name: Questions
+    url: https://github.com/Made-In-Basement/ember/discussions
+    about: How do I build it, will it run on my PC, what does this do.

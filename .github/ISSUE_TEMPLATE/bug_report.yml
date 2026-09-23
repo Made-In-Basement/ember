@@ -1,0 +1,57 @@
+name: Bug report
+description: Something in Ember doesn't work, on real hardware or in an emulator.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. The machine and how it was booted matter most:
+        many of Ember's bugs appear on one PC and not on another.
+  - type: dropdown
+    id: edition
+    attributes:
+      label: Which Ember
+      options:
+        - Ember (BIOS / CSM boot, build/ember.img)
+        - Ember 2.0 (UEFI boot)
+        - Not sure
+    validations:
+      required: true
+  - type: input
+    id: machine
+    attributes:
+      label: Machine
+      description: Make and model of the PC, or the emulator and its command line.
+      placeholder: "Lenovo Yoga 11e, or: qemu-system-i386 -m 64 -drive file=build/ember.img,format=raw"
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: The commit you built from, or where you downloaded the image.
+      placeholder: "2c07764"
+  - type: textarea
+    id: steps
+    attributes:
+      label: What you did
+      description: What you typed or clicked, in order.
+      placeholder: |
+        1. Booted from the USB stick
+        2. Typed WIN
+        3. Opened ...
+    validations:
+      required: true
+  - type: textarea
+    id: result
+    attributes:
+      label: What happened, and what you expected
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Screenshots, photos and logs
+      description: |
+        A photo of the screen helps if it stopped. If EMBER.LOG is on the stick,
+        attach it here (drag the file in).
