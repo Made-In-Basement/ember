@@ -507,5 +507,8 @@ build/              output (not in the repository)
 ## License
 
 MIT, see `LICENSE`. NDOOM is built from id Software's Doom source, which is
-under the GPL; a distributed `NDOOM.N32` carries that license. minimp3 is
-public domain.
+under the GPL; a distributed `NDOOM.N32` carries that license. CHESS is
+built the same way from Stockfish 11, which is GPLv3: `nano/chess/` is
+GPLv3 and a distributed `CHESS.N32` carries that license. Reversi is MIT,
+by Boris K. ([@borkit](https://github.com/borkit)), who also wrote Chess.
+minimp3 is public domain.
