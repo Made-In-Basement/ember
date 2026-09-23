@@ -150,8 +150,8 @@ and the computer's choice at depth 3, plus the final score of each game.
 
 The C and JavaScript outputs are **byte-identical: 3,598 positions and 60
 results, 3,658 lines**. The engine is unchanged by the new front end, so
-this still holds. The harness needs `game.js`, so it lives outside this
-tree:
+this still holds. The harness needs `game.js`, so it lived outside this
+tree (borkit/reversi and borkit/ember-contrib are no longer online):
 [parity.c](https://github.com/borkit/ember-contrib/blob/main/reversi/parity.c) ·
 [parity.mjs](https://github.com/borkit/ember-contrib/blob/main/reversi/parity.mjs).
 
@@ -162,7 +162,7 @@ python3 tools/build_reversi.py            # root/REVERSI.N32
 python3 tools/build_reversi.py --image    # and build/ember.img with it
 ```
 
-It needs Zig 0.13 and Python 3 with Pillow, and takes `find_zig()` and
+It needs Zig (0.13 or 0.16) and Python 3 with Pillow, and takes `find_zig()` and
 `finish_image()` from `build_doom.py`, so it looks for Zig the same way. It:
 
 1. Downloads the DejaVu fonts 2.37 to `build/src_dl` (or
@@ -196,7 +196,7 @@ connection. `root/*.N32` is already in `.gitignore`.
 Everything below ran on Ember `main` at `2c07764` in a container (Ubuntu
 24.04, Zig 0.13.0, NASM 2.16.01, QEMU 8.2.2, Python 3.12):
 [ember-contrib/docker](https://github.com/borkit/ember-contrib/tree/main/docker).
-The scripts are in
+The scripts were in
 [ember-contrib/reversi/tests](https://github.com/borkit/ember-contrib/tree/main/reversi/tests).
 
 | Check | Result |
@@ -236,6 +236,21 @@ The first version of this PR was a VGA mode 13h front end. It passed the same
 kind of tests in QEMU but stopped responding to the keyboard in Hyper-V (the
 lost interrupt above), which is why it was rewritten on Chess's input code.
 
+It was built again on Windows with Zig 0.16 and replayed in QEMU: the new
+game screen, a typed `d3` answered by `e3`, and a whole `reversi watch 2
+exit` game, 46-18, refereed separately. Zig 0.16's compiler runtime no
+longer has `cos` and `ceil`, so `nano/libc.c` gained them.
+
 It has not yet been run on real hardware. It needs a VESA BIOS with a
 linear-framebuffer mode of at least 640x480, which a BIOS or CSM boot
 provides.
+
+## License
+
+Reversi is MIT, like the rest of Ember, with the permission of its author,
+Boris K. ([@borkit](https://github.com/borkit)), who wrote the original
+browser game and this port.
+
+The text is drawn at build time from the DejaVu fonts, which are downloaded
+and not kept in the tree. Their license is the Bitstream Vera license, a
+permissive one; a disk image carrying `REVERSI.N32` carries the glyphs.

@@ -10,7 +10,7 @@ and C++ runtime files are the same as Chess's.  C++ is compiled against
 libc++'s headers and linked only with the runtime in nano/, using Zig's
 bundled clang/lld, with the x87 for floating point and no SSE.
 
-Needs Zig 0.13 and Python 3 with Pillow: the text is drawn at build time from
+Needs Zig (0.13 or 0.16) and Python 3 with Pillow: the text is drawn at build time from
 the DejaVu fonts (tools/mkreversiart.py), downloaded to build/src_dl and
 checked against their SHA-256.  --image also runs build.py, so
 build/ember.img has the game in its root.
