@@ -1,0 +1,52 @@
+name: Program or game proposal
+description: Propose a program or game to include in Ember, before or alongside a pull request.
+labels: ["program"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        To show off something you made without adding it to Ember, post it in
+        [Discussions](https://github.com/Made-In-Basement/ember/discussions) instead.
+
+        To add it to Ember, it has to be built from source in this repository
+        and carry a license compatible with MIT. See CONTRIBUTING.md.
+  - type: input
+    id: name
+    attributes:
+      label: Name
+      placeholder: "Reversi"
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What it is
+      description: What it does, and how it runs (DOS .COM/.EXE, 32-bit .N32, desktop app).
+    validations:
+      required: true
+  - type: input
+    id: license
+    attributes:
+      label: License
+      description: Your code's license, and that of anything it is ported from or links with.
+      placeholder: "MIT, my own code"
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: It contains no game data, commercial binaries or vendor drivers.
+          required: true
+        - label: It contains no GPL or other copyleft code, or I have explained which, above.
+          required: true
+  - type: textarea
+    id: tested
+    attributes:
+      label: Tested on
+      description: QEMU, real hardware (which), or both.
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: Screenshots
