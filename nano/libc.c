@@ -250,7 +250,11 @@ int64_t __moddi3(int64_t a, int64_t b)
 /* ---------------------------------------------------------------- math */
 double fabs(double x) { return x < 0 ? -x : x; }
 double floor(double x) { long i = (long)x; return (x < 0 && (double)i != x) ? i - 1 : i; }
+double ceil(double x) { return -floor(-x); }
 double sqrt(double x) { double r; __asm__("fsqrt" : "=t"(r) : "0"(x)); return r; }
+/* Zig 0.13's compiler runtime supplied these two; newer Zigs do not. */
+double sin(double x) { double r; __asm__("fsin" : "=t"(r) : "0"(x)); return r; }
+double cos(double x) { double r; __asm__("fcos" : "=t"(r) : "0"(x)); return r; }
 float fabsf(float x) { return x < 0 ? -x : x; }
 float floorf(float x) { long i = (long)x; return (x < 0 && (float)i != x) ? (float)(i - 1) : (float)i; }
 float sqrtf(float x) { float r; __asm__("fsqrt" : "=t"(r) : "0"(x)); return r; }
