@@ -40,6 +40,8 @@ int memcmp(const void *a, const void *b, size_t n)
     while (n--) { if (*x != *y) return *x - *y; x++; y++; }
     return 0;
 }
+/* clang turns equality-only memcmp calls into bcmp */
+int bcmp(const void *a, const void *b, size_t n) { return memcmp(a, b, n); }
 
 /* ---------------------------------------------------------------- strings */
 size_t strlen(const char *s) { const char *p = s; while (*p) p++; return p - s; }
@@ -257,6 +259,7 @@ double sin(double x) { double r; __asm__("fsin" : "=t"(r) : "0"(x)); return r; }
 double cos(double x) { double r; __asm__("fcos" : "=t"(r) : "0"(x)); return r; }
 float fabsf(float x) { return x < 0 ? -x : x; }
 float floorf(float x) { long i = (long)x; return (x < 0 && (float)i != x) ? (float)(i - 1) : (float)i; }
+float ceilf(float x) { return -floorf(-x); }
 float sqrtf(float x) { float r; __asm__("fsqrt" : "=t"(r) : "0"(x)); return r; }
 /* The x87 reduces the argument itself; angles here are bounded well inside
    what it will accept, so there is nothing to do beforehand. */
@@ -287,6 +290,25 @@ double pow(double x, double y)
             "fscale\n\t"
             "fstp %%st(1)"
             : "=t"(r) : "0"(x), "u"(y) : "st(1)", "st(2)");
+    return r;
+}
+
+double exp(double x)
+{
+    /* e^x = 2^(x*log2(e)), the same steps as pow.  Zig 0.13's runtime had it. */
+    double r;
+    __asm__("fldl2e\n\t"
+            "fmulp\n\t"                     /* v = x*log2(e) */
+            "fld %%st(0)\n\t"
+            "frndint\n\t"
+            "fxch\n\t"
+            "fsub %%st(1), %%st(0)\n\t"
+            "f2xm1\n\t"
+            "fld1\n\t"
+            "faddp\n\t"
+            "fscale\n\t"
+            "fstp %%st(1)"
+            : "=t"(r) : "0"(x) : "st(1)", "st(2)");
     return r;
 }
 

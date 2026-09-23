@@ -140,3 +140,17 @@ namespace std { inline namespace __1 {
   string to_string(unsigned long long v) { return decimal(v, false); }
 
 }} // namespace std::__1
+
+#include <functional>
+
+namespace std { inline namespace __1 {
+
+#if _LIBCPP_AVAILABILITY_HAS_HASH_MEMORY
+  // Newer libc++ (Zig 0.16) keeps this in its library rather than its
+  // headers; the same hash the older headers inlined, for unordered_map.
+  size_t __hash_memory(_LIBCPP_NOESCAPE const void* p, size_t n) noexcept {
+    return __murmur2_or_cityhash<size_t>()(p, n);
+  }
+#endif
+
+}} // namespace std::__1

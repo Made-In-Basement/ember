@@ -11,9 +11,9 @@ Ember's 32-bit runtime.  nano/chess/ is the game: board, input, rules, and
 the replacements for the parts of Stockfish Ember cannot run.  Everything in
 nano/chess/ is GPLv3 too (nano/chess/COPYING).
 
-Needs Zig 0.13 and Python 3 with Pillow: the pieces and text are drawn at
+Needs Zig (0.13 or 0.16) and Python 3 with Pillow: the pieces and text are drawn at
 build time from the DejaVu fonts (tools/mkchessart.py), also downloaded and
-checked.  --image also runs build.py, so build/ember.img has the game.
+checked, as is musl's source for exp() and pow().  --image also runs build.py, so build/ember.img has the game.
 
 The tests that compare this build with the untouched Stockfish 11 (bench,
 perft, 1500 games refereed by python-chess, scripted games in QEMU) live in
@@ -46,6 +46,12 @@ SF_DIR = 'Stockfish-sf_11'
 FONT_URL = ('https://github.com/dejavu-fonts/dejavu-fonts/releases/download/'
             'version_2_37/dejavu-fonts-ttf-2.37.tar.bz2')
 FONT_SHA256 = 'fa9ca4d13871dd122f61258a80d01751d603b4d3ee14095d65453b4e846e17d7'
+
+# exp() and pow() are compiled from musl's C source, which Zig 0.16 no longer
+# ships (its exp is now written in Zig).  1.2.5 is the musl Zig 0.13 carried.
+MUSL_URL = 'https://musl.libc.org/releases/musl-1.2.5.tar.gz'
+MUSL_SHA256 = 'a9a118bbe84d8764da0ea0d28b3ab3fae8477fc7e4085d90102b8596fc7c75e4'
+MUSL_DIR = 'musl-1.2.5'
 
 # Stockfish's own files that are compiled unchanged, or with the patches below.
 SF_SOURCES = ['bitbase', 'bitboard', 'endgame', 'evaluate', 'material', 'movegen',
@@ -243,12 +249,13 @@ def main():
     ap.add_argument('--image', action='store_true', help='also rebuild build/ember.img')
     args = ap.parse_args()
     zig = find_zig()
-    import json
-    zig_lib = json.loads(run([zig, 'env']))['lib_dir']
 
     # Fresh, patched Stockfish, and the artwork.
     sf_tar = fetch(SF_URL, SF_SHA256, 'sf_11.tar.gz')
     font_tar = fetch(FONT_URL, FONT_SHA256, 'dejavu-fonts-ttf-2.37.tar.bz2')
+    musl_tar = fetch(MUSL_URL, MUSL_SHA256, 'musl-1.2.5.tar.gz')
+    if not os.path.exists(os.path.join(BUILD, 'musl', MUSL_DIR)):
+        unpack(musl_tar, os.path.join(BUILD, 'musl'), 'r:gz')
     unpack(sf_tar, os.path.join(BUILD, 'sf'), 'r:gz')
     src = os.path.join(BUILD, 'sf', SF_DIR, 'src')
     apply_patches(src)
@@ -290,7 +297,7 @@ def main():
                    '-I' + PORT, '-I' + src, '-c', os.path.join(GAME, name + '.cpp'), '-o', o], o)
 
     # exp() and pow() from musl's C sources, renamed sf_exp and sf_pow.
-    m = os.path.join(zig_lib, 'libc', 'musl')
+    m = os.path.join(BUILD, 'musl', MUSL_DIR)
     minc = ['-I' + os.path.join(m, 'src', 'include'), '-I' + os.path.join(m, 'src', 'internal'),
             '-I' + os.path.join(m, 'arch', 'i386'), '-I' + os.path.join(m, 'arch', 'generic'),
             '-I' + os.path.join(m, 'include')]
