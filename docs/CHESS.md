@@ -11,7 +11,9 @@ as the released Stockfish 11 does.
 
 Stockfish is GPLv3, so `nano/chess/` is GPLv3 as well (`nano/chess/COPYING`).
 As with Doom, the GPL source is not kept in the tree: `tools/build_chess.py`
-downloads the release and checks it.
+downloads the release and checks it. The rest of Ember stays MIT; a disk
+image with `CHESS.N32` on it carries a GPLv3 program, whose source is
+`nano/chess/` plus the Stockfish 11 release the build names.
 
 ## Playing it
 
@@ -125,14 +127,16 @@ it reads events, and hands it to the handler its interrupt would have reached.
 python3 tools/build_chess.py --image
 ```
 
-Needs Zig 0.13 and Python 3 with Pillow. `--image` also needs what `build.py`
-needs. The first build downloads Stockfish 11 (1 MB) and the DejaVu fonts
-(5 MB) to `build/src_dl`, checking both against their SHA-256.
+Needs Zig (0.13 or 0.16) and Python 3 with Pillow. `--image` also needs what
+`build.py` needs. The first build downloads Stockfish 11 (1 MB), the DejaVu
+fonts (5 MB) and musl 1.2.5's source (1 MB) to `build/src_dl`, checking each
+against its SHA-256. musl supplies `exp()` and `pow()` for the search, the
+same C code whichever Zig builds it.
 
 ## Testing
 
-The checks live in [ember-contrib](https://github.com/borkit/ember-contrib/tree/main/chess#testing),
-with a Linux build of the same code and the untouched Stockfish 11 to
+The checks lived in [ember-contrib](https://github.com/borkit/ember-contrib/tree/main/chess#testing)
+(no longer online), with a Linux build of the same code and the untouched Stockfish 11 to
 compare against. Run in Docker, with QEMU for Ember:
 
 | Check | Result |
@@ -159,5 +163,11 @@ left, `CHESS.PGN` is read back off the disk and refereed. They cover:
 `CHESS BENCH`, `CHESS PERFT [DEEP]` and `CHESS RULES [games]` also run on
 Ember itself and write `CHESSBEN.TXT`, `CHESSPER.TXT` and `CHESSRUL.TXT`,
 so a real machine can be checked the same way.
+
+Built again on Windows with Zig 0.16 and run in QEMU: `CHESS BENCH 8`
+searched 379,601 nodes, as the Linux reference does; `CHESS PERFT` got 6 of
+6; a move as each colour was answered; and `CHESS WATCH 1 EXIT` played a
+53-ply game to checkmate, whose `CHESS.PGN` python-chess found legal
+throughout.
 
 It has not been run on real hardware yet: QEMU and Hyper-V only.

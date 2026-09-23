@@ -16,8 +16,8 @@ build time from the DejaVu fonts (tools/mkchessart.py), also downloaded and
 checked, as is musl's source for exp() and pow().  --image also runs build.py, so build/ember.img has the game.
 
 The tests that compare this build with the untouched Stockfish 11 (bench,
-perft, 1500 games refereed by python-chess, scripted games in QEMU) live in
-ember-contrib, with a Linux build of the same code: docs/CHESS.md.
+perft, 1500 games refereed by python-chess, scripted games in QEMU) are
+described in docs/CHESS.md.
 """
 import argparse
 import glob
